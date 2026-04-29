@@ -1,6 +1,6 @@
 {
   "name": "moonbridge",
-  "main": "cmd/cloudflare/worker.ts",
+  "main": "build/worker.mjs",
   "compatibility_date": "2026-04-28",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
