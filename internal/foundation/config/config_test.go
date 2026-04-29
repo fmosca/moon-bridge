@@ -726,7 +726,6 @@ developer:
 	}
 }
 
-
 func TestDumpConfigSchemaSkipsUpToDateSchema(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yml")
@@ -767,4 +766,3 @@ func TestDumpConfigSchemaSkipsMissingPluginDir(t *testing.T) {
 		t.Fatalf("main schema not found: %v", err)
 	}
 }
-

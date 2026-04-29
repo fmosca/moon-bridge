@@ -102,16 +102,20 @@ func injectExtensionSchemas(raw map[string]any, knownTypes map[string]func() any
 		if !ok {
 			continue
 		}
-		extBlock["properties"] = buildExtensionProperties(knownTypes)
-	}
 
-	// Add extension config type defs.
-	for name, factory := range knownTypes {
-		r := &jsonschema.Reflector{}
-		s := schemaToMap(r.Reflect(factory()))
-		tdef, _ := extractTypeDef(s)
-		if tdef != nil {
+		// Build extension config type defs first, then only reference those
+		// that successfully produced a schema def — avoids dangling $ref.
+		validExtensions := make(map[string]extensionEntry)
+		for name, factory := range knownTypes {
+			r := &jsonschema.Reflector{}
+			s := schemaToMap(r.Reflect(factory()))
+			ref, _ := s["$ref"].(string)
+			tdef, _ := extractTypeDef(s, ref)
+			if tdef == nil {
+				continue
+			}
 			defName := extensionDefName(name)
+			validExtensions[name] = extensionEntry{defName: defName}
 			defs[defName] = map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -121,14 +125,20 @@ func injectExtensionSchemas(raw map[string]any, knownTypes map[string]func() any
 				"additionalProperties": false,
 			}
 		}
+		extBlock["properties"] = buildExtensionProperties(validExtensions)
 	}
 }
 
-func buildExtensionProperties(knownTypes map[string]func() any) map[string]any {
-	props := make(map[string]any, len(knownTypes))
-	for name := range knownTypes {
+type extensionEntry struct {
+	defName string
+}
+
+func buildExtensionProperties(validExtensions map[string]extensionEntry) map[string]any {
+	props := make(map[string]any, len(validExtensions))
+	for name := range validExtensions {
+		entry := validExtensions[name]
 		props[name] = map[string]any{
-			"$ref": "#/$defs/" + extensionDefName(name),
+			"$ref": "#/$defs/" + entry.defName,
 		}
 	}
 	return props
@@ -142,19 +152,24 @@ func extensionDefName(name string) string {
 	return strings.ToUpper(name[:1]) + name[1:] + "Extension"
 }
 
-// extractTypeDef extracts the first type definition from a reflected schema.
+// extractTypeDef extracts a type definition from a reflected schema by expected def name.
 // A reflected struct produces {"$ref":"#/$defs/X","$defs":{"X":{...}}}.
-func extractTypeDef(raw map[string]any) (map[string]any, bool) {
+// refPath is the $ref value (e.g. "#/$defs/X") — the def name is the last segment.
+func extractTypeDef(raw map[string]any, refPath string) (map[string]any, bool) {
 	defs, ok := raw["$defs"].(map[string]any)
 	if !ok || len(defs) == 0 {
 		return nil, false
 	}
-	for _, v := range defs {
-		if m, ok := v.(map[string]any); ok {
-			return m, true
-		}
+	// Extract def name from "#/$defs/X".
+	name := refPath
+	if idx := strings.LastIndex(refPath, "/"); idx >= 0 {
+		name = refPath[idx+1:]
 	}
-	return nil, false
+	if name == "" {
+		return nil, false
+	}
+	def, ok := defs[name].(map[string]any)
+	return def, ok
 }
 
 // generatePluginSchema returns a JSON Schema for a named plugin config file.

@@ -11,9 +11,9 @@ const (
 	DefaultConfigFileName = "config.yml"
 	// DefaultConfigPath is kept for callers that need the config file name.
 	// Use XDGDefaultConfigPath to resolve the CLI's default config location.
-	DefaultConfigPath          = DefaultConfigFileName
-	AppConfigDirName           = "moonbridge"
-	DefaultAddr                = "127.0.0.1:38440"
+	DefaultConfigPath = DefaultConfigFileName
+	AppConfigDirName  = "moonbridge"
+	DefaultAddr       = "127.0.0.1:38440"
 )
 
 const (
@@ -601,7 +601,6 @@ func boolOrDefault(value *bool, fallback bool) bool {
 	}
 	return *value
 }
-
 
 func (cfg Config) validateExtensions() error {
 	for _, spec := range cfg.extensionSpecs {

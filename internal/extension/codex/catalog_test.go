@@ -159,7 +159,7 @@ func TestWriteModelsCatalogProducesValidJSON(t *testing.T) {
 
 func TestBuildModelInfoFromProviderModelIncludesInputModalities(t *testing.T) {
 	info := codex.BuildModelInfoFromProviderModel("gpt-4o(openai)", "openai", config.ModelMeta{
-		ContextWindow: 128000,
+		ContextWindow:   128000,
 		InputModalities: []string{"text", "image"},
 	})
 	if len(info.InputModalities) != 2 {
@@ -185,8 +185,8 @@ func TestBuildModelInfoDefaultsInputModalitiesToText(t *testing.T) {
 
 func TestBuildModelInfoFromRoutePropagatesInputModalities(t *testing.T) {
 	info := codex.BuildModelInfoFromRoute("gpt-image", "openai", config.RouteEntry{
-		Model: "gpt-4o",
-		InputModalities: []string{"text", "image"},
+		Model:                       "gpt-4o",
+		InputModalities:             []string{"text", "image"},
 		SupportsImageDetailOriginal: true,
 	})
 	if len(info.InputModalities) != 2 || info.InputModalities[1] != "image" {

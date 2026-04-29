@@ -17,8 +17,8 @@ import (
 	"sort"
 	"strings"
 
-	"moonbridge/internal/foundation/config"
 	"moonbridge/internal/extension/visual"
+	"moonbridge/internal/foundation/config"
 )
 
 // ModelInfo represents a model entry in the OpenAI /v1/models response.
@@ -183,7 +183,14 @@ func injectVisualModalities(models []ModelInfo, cfg config.Config) []ModelInfo {
 			}
 		}
 		if !hasImage {
-			result[i].InputModalities = []string{"text", "image"}
+			// Append "image" to existing modalities; preserve any non-standard
+			// modalities (e.g. "audio") the user may have configured.
+			// Default to ["text"] if the list is empty.
+			base := result[i].InputModalities
+			if len(base) == 0 {
+				base = []string{"text"}
+			}
+			result[i].InputModalities = append(base, "image")
 		}
 	}
 	return result
@@ -222,27 +229,27 @@ func newModelInfo(
 		baseInstructions = defaultBaseInstructions(slug)
 	}
 	return ModelInfo{
-		Slug:                       slug,
-		DisplayName:                displayName,
-		Description:                description,
-		DefaultReasoningLevel:      defaultReasoningLevel,
-		SupportedReasoningLevels:   levels,
-		ShellType:                  "unified_exec",
-		Visibility:                 "list",
-		SupportedInAPI:             true,
-		Priority:                   0,
-		AdditionalSpeedTiers:       []string{},
-		BaseInstructions:           baseInstructions,
-		SupportsReasoningSummaries: supportsReasoningSummaries,
-		DefaultReasoningSummary:    defaultReasoningSummary,
-		WebSearchToolType:          "text",
-		ApplyPatchToolType:         &applyPatchToolType,
-		TruncationPolicy:           truncationPolicyForModel(slug),
-		SupportsParallelToolCalls:  true,
-		ContextWindow:              ctxWin,
-		MaxContextWindow:           maxCtxWin,
-		EffectiveContextWindowPct:  95,
-		ExperimentalSupportedTools: []string{},
+		Slug:                        slug,
+		DisplayName:                 displayName,
+		Description:                 description,
+		DefaultReasoningLevel:       defaultReasoningLevel,
+		SupportedReasoningLevels:    levels,
+		ShellType:                   "unified_exec",
+		Visibility:                  "list",
+		SupportedInAPI:              true,
+		Priority:                    0,
+		AdditionalSpeedTiers:        []string{},
+		BaseInstructions:            baseInstructions,
+		SupportsReasoningSummaries:  supportsReasoningSummaries,
+		DefaultReasoningSummary:     defaultReasoningSummary,
+		WebSearchToolType:           "text",
+		ApplyPatchToolType:          &applyPatchToolType,
+		TruncationPolicy:            truncationPolicyForModel(slug),
+		SupportsParallelToolCalls:   true,
+		ContextWindow:               ctxWin,
+		MaxContextWindow:            maxCtxWin,
+		EffectiveContextWindowPct:   95,
+		ExperimentalSupportedTools:  []string{},
 		InputModalities:             inputModalities,
 		SupportsImageDetailOriginal: supportsImageDetailOriginal,
 	}

@@ -323,6 +323,8 @@ func TestRequestContextSessionState(t *testing.T) {
 
 type mockAppCfg struct{}
 
+func (m *mockAppCfg) ExtensionConfig(name string, modelAlias string) any { return nil }
+
 func (m *mockAppCfg) PluginConfig(name string) map[string]any {
 	return map[string]any{"key": "value"}
 }

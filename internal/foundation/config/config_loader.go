@@ -61,16 +61,16 @@ type ProviderModelFileConfig struct {
 	MaxOutputTokens int                    `yaml:"max_output_tokens" json:"max_output_tokens,omitempty"`
 	Pricing         ModelPricingFileConfig `yaml:"pricing" json:"pricing,omitempty"`
 	// Codex model catalog metadata (injected into /v1/models responses).
-	DisplayName                string                           `yaml:"display_name" json:"display_name,omitempty"`
-	Description                string                           `yaml:"description" json:"description,omitempty"`
-	DefaultReasoningLevel      string                           `yaml:"default_reasoning_level" json:"default_reasoning_level,omitempty"`
-	SupportedReasoningLevels   []ReasoningLevelPresetFileConfig `yaml:"supported_reasoning_levels" json:"supported_reasoning_levels,omitempty"`
-	SupportsReasoningSummaries *bool                            `yaml:"supports_reasoning_summaries" json:"supports_reasoning_summaries,omitempty"`
-	DefaultReasoningSummary    string                           `yaml:"default_reasoning_summary" json:"default_reasoning_summary,omitempty"`
-	InputModalities                []string                         `yaml:"input_modalities" json:"input_modalities,omitempty"`
-	SupportsImageDetailOriginal    *bool                            `yaml:"supports_image_detail_original" json:"supports_image_detail_original,omitempty"`
-	WebSearch                  WebSearchFileConfig              `yaml:"web_search" json:"web_search,omitempty"`
-	Extensions                 map[string]ExtensionFileConfig   `yaml:"extensions" json:"extensions,omitempty"`
+	DisplayName                 string                           `yaml:"display_name" json:"display_name,omitempty"`
+	Description                 string                           `yaml:"description" json:"description,omitempty"`
+	DefaultReasoningLevel       string                           `yaml:"default_reasoning_level" json:"default_reasoning_level,omitempty"`
+	SupportedReasoningLevels    []ReasoningLevelPresetFileConfig `yaml:"supported_reasoning_levels" json:"supported_reasoning_levels,omitempty"`
+	SupportsReasoningSummaries  *bool                            `yaml:"supports_reasoning_summaries" json:"supports_reasoning_summaries,omitempty"`
+	DefaultReasoningSummary     string                           `yaml:"default_reasoning_summary" json:"default_reasoning_summary,omitempty"`
+	InputModalities             []string                         `yaml:"input_modalities" json:"input_modalities,omitempty"`
+	SupportsImageDetailOriginal *bool                            `yaml:"supports_image_detail_original" json:"supports_image_detail_original,omitempty"`
+	WebSearch                   WebSearchFileConfig              `yaml:"web_search" json:"web_search,omitempty"`
+	Extensions                  map[string]ExtensionFileConfig   `yaml:"extensions" json:"extensions,omitempty"`
 }
 
 type ProviderDefFileConfig struct {
@@ -254,7 +254,7 @@ func FromFileConfigWithOptions(fileConfig FileConfig, opts LoadOptions) (Config,
 	cfg := Config{
 		Mode:              mode,
 		Addr:              valueOrDefault(strings.TrimSpace(fileConfig.Server.Addr), DefaultAddr),
-		AuthToken:          strings.TrimSpace(fileConfig.Server.AuthToken),
+		AuthToken:         strings.TrimSpace(fileConfig.Server.AuthToken),
 		TraceRequests:     fileConfig.TraceRequests,
 		LogLevel:          valueOrDefault(strings.TrimSpace(fileConfig.Log.Level), "info"),
 		LogFormat:         valueOrDefault(strings.TrimSpace(fileConfig.Log.Format), "text"),
@@ -422,18 +422,18 @@ func fromProviderDefFileConfig(fileConfig map[string]ProviderDefFileConfig, spec
 				return nil, err
 			}
 			meta := ModelMeta{
-				ContextWindow:              m.ContextWindow,
-				MaxOutputTokens:            m.MaxOutputTokens,
-				InputPrice:                 m.Pricing.InputPrice,
-				OutputPrice:                m.Pricing.OutputPrice,
-				CacheWritePrice:            m.Pricing.CacheWritePrice,
-				CacheReadPrice:             m.Pricing.CacheReadPrice,
-				DisplayName:                strings.TrimSpace(m.DisplayName),
-				Description:                strings.TrimSpace(m.Description),
-				DefaultReasoningLevel:      strings.TrimSpace(m.DefaultReasoningLevel),
-				SupportsReasoningSummaries: boolOrDefault(m.SupportsReasoningSummaries, false),
-				DefaultReasoningSummary:    strings.TrimSpace(m.DefaultReasoningSummary),
-				Extensions:                 modelExtensions,
+				ContextWindow:               m.ContextWindow,
+				MaxOutputTokens:             m.MaxOutputTokens,
+				InputPrice:                  m.Pricing.InputPrice,
+				OutputPrice:                 m.Pricing.OutputPrice,
+				CacheWritePrice:             m.Pricing.CacheWritePrice,
+				CacheReadPrice:              m.Pricing.CacheReadPrice,
+				DisplayName:                 strings.TrimSpace(m.DisplayName),
+				Description:                 strings.TrimSpace(m.Description),
+				DefaultReasoningLevel:       strings.TrimSpace(m.DefaultReasoningLevel),
+				SupportsReasoningSummaries:  boolOrDefault(m.SupportsReasoningSummaries, false),
+				DefaultReasoningSummary:     strings.TrimSpace(m.DefaultReasoningSummary),
+				Extensions:                  modelExtensions,
 				InputModalities:             m.InputModalities,
 				SupportsImageDetailOriginal: boolOrDefault(m.SupportsImageDetailOriginal, false),
 			}
@@ -490,4 +490,3 @@ func fromCacheFileConfig(fileConfig CacheFileConfig) CacheConfig {
 		MinBreakpointTokens:      intOrDefault(fileConfig.MinBreakpointTokens, 1024),
 	}
 }
-

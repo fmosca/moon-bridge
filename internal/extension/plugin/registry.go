@@ -98,26 +98,24 @@ func (r *Registry) ConfigSpecs() []config.ExtensionConfigSpec {
 	return specs
 }
 
+// InitConfigProvider is the minimal interface InitAll needs from the app config.
+type InitConfigProvider interface {
+	ExtensionConfig(name string, modelAlias string) any
+}
+
 // InitAll calls Init on all registered plugins.
-func (r *Registry) InitAll(appCfg any) error {
+func (r *Registry) InitAll(appCfg InitConfigProvider) error {
 	for _, p := range r.plugins {
 		var appConfig config.Config
 		var typedCfg any
 
 		if appCfg != nil {
-			if extCfg, ok := any(appCfg).(interface {
-				ExtensionConfig(name string, modelAlias string) any
-			}); ok {
-				typedCfg = extCfg.ExtensionConfig(p.Name(), "")
-			}
+			typedCfg = appCfg.ExtensionConfig(p.Name(), "")
 			if cfg, ok := any(appCfg).(*config.Config); ok && cfg != nil {
 				appConfig = *cfg
 			} else if cfg, ok := any(appCfg).(config.Config); ok {
 				appConfig = cfg
 			}
-		}
-		if typedCfg == nil {
-			typedCfg = config.DecodePluginConfig(p.Name(), nil)
 		}
 		ctx := PluginContext{
 			Config:    typedCfg,
