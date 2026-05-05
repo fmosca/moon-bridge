@@ -247,6 +247,10 @@ func resolvePerProviderWebSearch(ctx context.Context, cfg config.Config, pm *pro
 				slog.Info("网页搜索注入模式已启用", "provider", key)
 			default:
 				resolved := probeProviderWebSearch(ctx, key, pm, errors)
+				if resolved == "disabled" && cfg.TavilyAPIKey != "" {
+					resolved = "injected"
+					slog.Info("网页搜索自动探测失败，回退到注入模式", "provider", key)
+				}
 				pm.SetResolvedWebSearch(key, resolved)
 			}
 		case config.ProtocolOpenAIResponse:
