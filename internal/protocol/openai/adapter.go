@@ -605,7 +605,7 @@ func (a *OpenAIAdapter) streamLoop(ctx context.Context, coreReq *format.CoreRequ
 				response.Usage = Usage{
 					InputTokens:  event.Usage.InputTokens,
 					OutputTokens: event.Usage.OutputTokens,
-					TotalTokens:  event.Usage.TotalTokens,
+					TotalTokens:  event.Usage.InputTokens + event.Usage.OutputTokens,
 					InputTokensDetails: InputTokensDetails{
 						CachedTokens: event.Usage.CachedInputTokens,
 					},
