@@ -42,9 +42,9 @@ type CacheManager interface {
 // Clean room: no dependency on internal/protocol/bridge/.
 // Only references: config, format, and anthropic types.
 type AnthropicProviderAdapter struct {
-	cfg          config.Config
-	cacheMgr     CacheManager
-	hooks        format.CorePluginHooks
+	cfg      config.Config
+	cacheMgr CacheManager
+	hooks    format.CorePluginHooks
 }
 
 // NewAnthropicProviderAdapter creates a new AnthropicProviderAdapter.
@@ -194,10 +194,11 @@ func (a *AnthropicProviderAdapter) ToCoreResponse(ctx context.Context, resp any)
 
 // streamConverterState tracks state across a stream conversion.
 type streamConverterState struct {
-	seqNum     int64
-	msgID      string
-	model      string
-	blockTypes map[int]string // content index → block type
+	seqNum          int64
+	msgID           string
+	model           string
+	blockTypes      map[int]string // content index → block type
+	blockSignatures map[int]string // content index → reasoning signature (from signature_delta)
 }
 
 // ToCoreStream consumes an anthropic.Stream and returns a channel of CoreStreamEvent.
@@ -216,7 +217,8 @@ func (a *AnthropicProviderAdapter) ToCoreStream(ctx context.Context, src any) (<
 		defer stream.Close()
 
 		state := &streamConverterState{
-			blockTypes: make(map[int]string),
+			blockTypes:      make(map[int]string),
+			blockSignatures: make(map[int]string),
 		}
 
 		for {
@@ -354,19 +356,35 @@ func (s *streamConverterState) convertEvent(events chan<- format.CoreStreamEvent
 				Index: index,
 				Delta: ev.Delta.Thinking,
 				ContentBlock: &format.CoreContentBlock{
-					Type:               "reasoning",
-					ReasoningSignature: ev.Delta.Signature,
+					Type: "reasoning",
 				},
 			})
+
+		case ev.Delta.Type == "signature_delta":
+			if sig := ev.Delta.Signature; sig != "" {
+				s.blockSignatures[index] = sig
+			}
 		}
 
 	case "content_block_stop":
 		index := ev.Index
+		blockType := s.blockTypes[index]
 
-		s.emit(events, format.CoreStreamEvent{
-			Type:  format.CoreContentBlockDone,
-			Index: index,
-		})
+		if blockType == "thinking" {
+			s.emit(events, format.CoreStreamEvent{
+				Type:  format.CoreContentBlockDone,
+				Index: index,
+				ContentBlock: &format.CoreContentBlock{
+					Type:               "reasoning",
+					ReasoningSignature: s.blockSignatures[index],
+				},
+			})
+		} else {
+			s.emit(events, format.CoreStreamEvent{
+				Type:  format.CoreContentBlockDone,
+				Index: index,
+			})
+		}
 		s.emit(events, format.CoreStreamEvent{
 			Type: format.CoreItemDone,
 		})
