@@ -547,6 +547,12 @@ func (s *Server) handleAdapterStream(
 		})
 	}
 
+	log.Info("流式请求完成",
+		"model", openAIReq.Model,
+		"input_tokens", finalUsage.InputTokens,
+		"output_tokens", finalUsage.OutputTokens,
+	)
+
 	// Update trace record with the final response data.
 	if finalResp != nil {
 		streamRecord.OpenAIResponse = finalResp
