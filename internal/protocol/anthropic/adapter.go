@@ -85,7 +85,7 @@ func (a *AnthropicProviderAdapter) FromCoreRequest(ctx context.Context, req *for
 	// Step 2: Build the anthropic MessageRequest.
 	anthropicReq := MessageRequest{
 		Model:         req.Model,
-		MaxTokens:     req.MaxTokens,
+		MaxTokens:     a.defaultMaxTokens(req.MaxTokens),
 		Messages:      make([]Message, 0, len(req.Messages)),
 		Temperature:   req.Temperature,
 		TopP:          req.TopP,
@@ -123,6 +123,8 @@ func (a *AnthropicProviderAdapter) FromCoreRequest(ctx context.Context, req *for
 	// ToolChoice
 	if req.ToolChoice != nil {
 		anthropicReq.ToolChoice = a.toAnthropicToolChoice(*req.ToolChoice)
+	} else {
+		anthropicReq.ToolChoice = ToolChoice{Type: "auto"}
 	}
 
 	// Step 3: Cache planning via CacheManager.
@@ -504,6 +506,18 @@ func (a *AnthropicProviderAdapter) toAnthropicToolChoice(tc format.CoreToolChoic
 		}
 		return ToolChoice{Type: "auto"}
 	}
+}
+
+// defaultMaxTokens ensures MaxTokens has a legal value.
+// If requested is 0 or negative, falls back to config default, then 1024.
+func (a *AnthropicProviderAdapter) defaultMaxTokens(requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	if a.cfg.DefaultMaxTokens > 0 {
+		return a.cfg.DefaultMaxTokens
+	}
+	return 1024
 }
 
 // extractCacheControl reads cache_control from a CoreContentBlock.Extensions map.
