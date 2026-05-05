@@ -590,9 +590,13 @@ func (m *adapterCacheManager) UpdateRegistry(ctx context.Context, key, ttl strin
 // injectAnthropicWebSearch adds the Anthropic web_search_20250305 server tool
 // to an anthropic.MessageRequest if not already present.
 func injectAnthropicWebSearch(req *anthropic.MessageRequest) {
-	for _, t := range req.Tools {
+	for i, t := range req.Tools {
 		if t.Name == "web_search" {
-			return // already present
+			// Already present — ensure Type is set correctly for Anthropic API.
+			if t.Type != "web_search_20250305" && t.Type != "web_search_20260209" {
+				req.Tools[i].Type = "web_search_20250305"
+			}
+			return
 		}
 	}
 	maxUses := 8

@@ -170,7 +170,6 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 		responsesRequest.Model, "", requestStart,
 		zeroUsage("anthropic", "none"), 0, "error", "no adapter path",
 	)
-	return
 }
 func (server *Server) writeTrace(record mbtrace.Record) {
 	if server.tracer == nil || !server.tracer.Enabled() {
