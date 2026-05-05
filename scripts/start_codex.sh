@@ -39,6 +39,9 @@ if [[ -z "$PROJECT_DIR" ]]; then
   usage
 fi
 
+# Resolve relative paths to absolute
+CODEX_HOME_DIR="$(cd "$CODEX_HOME_DIR" && pwd 2>/dev/null || echo "$CODEX_HOME_DIR")"
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd 2>/dev/null || echo "$PROJECT_DIR")"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.moonbridge.env"
 LOG_FILE="${ROOT_DIR}/logs/codex.log"
@@ -58,6 +61,9 @@ CONFIG_FILE="${MOONBRIDGE_CONFIG_FILE:-}"
 verify_moonbridge_alive
 
 MODEL_ALIAS="${MOONBRIDGE_CODEX_MODEL:-${MOONBRIDGE_DEFAULT_MODEL:-}}"
+
+
+MODEL_ALIAS="${MODEL_ALIAS##*/}"
 if [[ -z "$MODEL_ALIAS" ]]; then
   log_error "no model alias configured for Codex"
   exit 1

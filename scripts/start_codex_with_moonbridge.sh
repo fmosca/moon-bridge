@@ -38,6 +38,9 @@ if [[ -z "$PROJECT_DIR" ]]; then
   usage
 fi
 
+# Resolve relative paths to absolute
+CODEX_HOME_DIR="$(cd "$CODEX_HOME_DIR" && pwd 2>/dev/null || echo "$CODEX_HOME_DIR")"
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd 2>/dev/null || echo "$PROJECT_DIR")"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${MOONBRIDGE_CONFIG:-"${ROOT_DIR}/config.yml"}"
 SERVER_BIN="${ROOT_DIR}/.cache/start-codex/moonbridge"
@@ -59,7 +62,11 @@ extract_server_metadata
 validate_mode "$MODE" Transform CaptureResponse
 
 MODEL_ALIAS="$("$SERVER_BIN" --config "$CONFIG_FILE" --print-codex-model 2>>"$LOG_FILE")"
+
+# Strip provider/ prefix
+MODEL_ALIAS="${MODEL_ALIAS##*/}"
 if [[ -z "$MODEL_ALIAS" ]]; then
+
   log_error "default_model or developer.proxy.response.model required for Codex"
   exit 1
 fi
