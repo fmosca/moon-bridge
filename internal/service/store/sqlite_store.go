@@ -20,11 +20,12 @@ type SQLiteConfigStore struct {
 	db      db.Store
 	logger  *slog.Logger
 	applyMu sync.Mutex
+	extensionSpecs []config.ExtensionConfigSpec
 }
 
 // NewSQLiteStore creates a new SQLiteConfigStore.
-func NewSQLiteStore(s db.Store, logger *slog.Logger) *SQLiteConfigStore {
-	return &SQLiteConfigStore{db: s, logger: logger}
+func NewSQLiteStore(s db.Store, logger *slog.Logger, extensionSpecs ...config.ExtensionConfigSpec) *SQLiteConfigStore {
+	return &SQLiteConfigStore{db: s, logger: logger, extensionSpecs: extensionSpecs}
 }
 
 // Compile-time interface check.
@@ -239,7 +240,7 @@ func (s *SQLiteConfigStore) LoadAll() (*config.Config, error) {
 	if fc.Mode == "" {
 		return nil, fmt.Errorf("config not seeded: mode is empty")
 	}
-	cfg, err := config.FromFileConfig(fc)
+	cfg, err := config.FromFileConfigWithOptions(fc, config.LoadOptions{ExtensionSpecs: s.extensionSpecs})
 	if err != nil {
 		return nil, fmt.Errorf("convert file config: %w", err)
 	}

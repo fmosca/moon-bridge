@@ -2,6 +2,7 @@ package store
 
 import (
 	"log/slog"
+	"moonbridge/internal/foundation/config"
 
 	"moonbridge/internal/foundation/db"
 )
@@ -11,6 +12,7 @@ import (
 type ConfigStoreConsumer struct {
 	store               db.Store
 	persistenceDisabled bool
+	extensionSpecs       []config.ExtensionConfigSpec
 	logger              *slog.Logger
 	configStore         ConfigStore
 }
@@ -18,6 +20,11 @@ type ConfigStoreConsumer struct {
 // NewConfigStoreConsumer creates a new ConfigStoreConsumer.
 func NewConfigStoreConsumer(logger *slog.Logger) *ConfigStoreConsumer {
 	return &ConfigStoreConsumer{logger: logger}
+}
+
+// SetExtensionSpecs provides extension config specs for config validation.
+func (c *ConfigStoreConsumer) SetExtensionSpecs(specs []config.ExtensionConfigSpec) {
+	c.extensionSpecs = specs
 }
 
 // Name returns the unique consumer identifier.
@@ -120,7 +127,7 @@ func (c *ConfigStoreConsumer) Tables() []db.TableSpec {
 // BindStore is called by the db.Registry after tables are created.
 func (c *ConfigStoreConsumer) BindStore(s db.Store) error {
 	c.store = s
-	c.configStore = NewSQLiteStore(s, c.logger)
+	c.configStore = NewSQLiteStore(s, c.logger, c.extensionSpecs...)
 	if c.logger != nil {
 		c.logger.Info("config_store 持久化已启用")
 	}

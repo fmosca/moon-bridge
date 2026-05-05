@@ -110,6 +110,7 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 	}
 	// Register the config_store consumer for configuration persistence.
 	configStoreConsumer := store.NewConfigStoreConsumer(logger.L())
+	configStoreConsumer.SetExtensionSpecs(BuiltinExtensions().ConfigSpecs())
 	dbRegistry.RegisterConsumer(configStoreConsumer)
 	if err := dbRegistry.Init(ctx, cfg.Persistence.ActiveProvider); err != nil {
 		return fmt.Errorf("init persistence: %w", err)
@@ -470,4 +471,3 @@ func DumpConfigSchema(configPath string) error {
 		ExtensionSpecs: BuiltinExtensions().ConfigSpecs(),
 	})
 }
-
