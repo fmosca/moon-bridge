@@ -3,20 +3,19 @@
 # requires-python = ">=3.10"
 # dependencies = ["httpx", "rich"]
 # ///
-"""Analyze MoonBridge metrics with cache usage breakdown.
+"""Analyze MoonBridge metrics grouped by Provider.
 
-Fetches per-request records from GET /v1/admin/metrics, aggregates per-model
-stats, and renders three focused tables: Usage, Cache Analysis, SLB.
+Fetches per-request records from GET /v1/admin/metrics, aggregates per-provider
+stats, and renders three focused tables: Usage, Cache Analysis, SLA.
 
 Usage:
-  BASE_URL=http://127.0.0.1:38440 API_KEY=sk-... python3 scripts/dev/metrics_analyze.py
-  # or with uv:
-  BASE_URL=http://127.0.0.1:38440 uv run scripts/dev/metrics_analyze.py
+  BASE_URL=http://127.0.0.1:38440 API_KEY=sk-... uv run scripts/dev/metrics_analyze.py
 
 Environment variables:
   BASE_URL   MoonBridge server base URL (required)
   API_KEY    Bearer token for authentication (optional if auth is disabled)
   LIMIT      Max records per page (default: 1000)
+  PROVIDER   Filter by provider key (optional)
   MODEL      Filter by model name (optional)
   SINCE      Filter by start time, RFC3339 (optional)
   UNTIL      Filter by end time, RFC3339 (optional)
@@ -26,7 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 from rich.console import Console
@@ -35,7 +34,7 @@ from rich.text import Text
 
 
 @dataclass
-class ModelStats:
+class ProviderStats:
     requests: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -44,6 +43,7 @@ class ModelStats:
     cost: float = 0.0
     total_response_time_ms: int = 0
     errors: int = 0
+    model_breakdown: dict[str, "ProviderStats"] = field(default_factory=dict)
 
     @property
     def fresh_input(self) -> int:
@@ -56,6 +56,7 @@ class ModelStats:
 
 
 # ── Data fetching ──
+
 
 def fetch_all_records(
     base_url: str,
@@ -93,30 +94,35 @@ def fetch_all_records(
     return all_records
 
 
-def aggregate(records: list[dict]) -> tuple[dict[str, ModelStats], ModelStats]:
-    by_model: dict[str, ModelStats] = {}
-    total = ModelStats()
+def aggregate(records: list[dict]) -> tuple[dict[str, ProviderStats], ProviderStats]:
+    by_provider: dict[str, ProviderStats] = {}
+    total = ProviderStats()
     for r in records:
+        provider = r.get("provider_key", "") or r.get("protocol", "?") or "?"
         model = r.get("actual_model") or r.get("model", "?")
-        ms = by_model.setdefault(model, ModelStats())
-        _update(ms, r)
+        ps = by_provider.setdefault(provider, ProviderStats())
+        _update(ps, r)
         _update(total, r)
-    return by_model, total
+        # Build model breakdown within provider
+        ms = ps.model_breakdown.setdefault(model, ProviderStats())
+        _update(ms, r)
+    return by_provider, total
 
 
-def _update(ms: ModelStats, r: dict) -> None:
-    ms.requests += 1
-    ms.input_tokens += r.get("input_tokens", 0)
-    ms.output_tokens += r.get("output_tokens", 0)
-    ms.cache_read += r.get("cache_read", 0)
-    ms.cache_creation += r.get("cache_creation", 0)
-    ms.cost += r.get("cost", 0.0)
-    ms.total_response_time_ms += r.get("response_time", 0) // 1_000_000  # Go time.Duration ns→ms
+def _update(ps: ProviderStats, r: dict) -> None:
+    ps.requests += 1
+    ps.input_tokens += r.get("input_tokens", 0)
+    ps.output_tokens += r.get("output_tokens", 0)
+    ps.cache_read += r.get("cache_read", 0)
+    ps.cache_creation += r.get("cache_creation", 0)
+    ps.cost += r.get("cost", 0.0)
+    ps.total_response_time_ms += r.get("response_time", 0) // 1_000_000
     if r.get("status") != "success":
-        ms.errors += 1
+        ps.errors += 1
 
 
 # ── Formatting ──
+
 
 def fmt_tok(n: int) -> str:
     if n >= 1_000_000_000:
@@ -133,8 +139,6 @@ def fmt_cost(v: float) -> str:
 
 
 def fmt_pct(v: float, *, invert: bool = False) -> Text:
-    """Format percentage. By default green=high; set invert=True for metrics
-    where lower is better (like fresh% = wasted cache potential)."""
     s = f"{v:.1f}%"
     if invert:
         if v <= 20:
@@ -171,8 +175,8 @@ def fmt_unit_cost(v: float | None) -> Text:
     return Text(s, style="red")
 
 
-def fmt_latency(ms: ModelStats) -> Text:
-    avg = ms.total_response_time_ms / ms.requests if ms.requests > 0 else 0
+def fmt_latency(ps: ProviderStats) -> Text:
+    avg = ps.total_response_time_ms / ps.requests if ps.requests > 0 else 0
     if avg <= 0:
         return Text("N/A", style="dim")
     if avg >= 1000:
@@ -186,16 +190,17 @@ def fmt_latency(ms: ModelStats) -> Text:
     return Text(s, style="red")
 
 
+def _sorted(by_provider: dict[str, ProviderStats]) -> list[tuple[str, ProviderStats]]:
+    return sorted(by_provider.items(), key=lambda x: x[1].cost, reverse=True)
+
+
 # ── Table builders ──
 
-def _sorted(by_model: dict[str, ModelStats]) -> list[tuple[str, ModelStats]]:
-    return sorted(by_model.items(), key=lambda x: x[1].cost, reverse=True)
 
-
-def build_usage_table(by_model: dict[str, ModelStats], total: ModelStats) -> Table:
-    """Table 1: token volume and cost per model."""
-    t = Table(title="Usage", expand=True, show_lines=False)
-    t.add_column("Model", style="cyan", no_wrap=True)
+def build_usage_table(by_provider: dict[str, ProviderStats], total: ProviderStats) -> Table:
+    """Table 1: token volume and cost per provider."""
+    t = Table(title="Usage by Provider", expand=True, show_lines=False)
+    t.add_column("Provider", style="cyan", no_wrap=True)
     t.add_column("Req", justify="right")
     t.add_column("Fresh", justify="right")
     t.add_column("Cache R", justify="right", style="green")
@@ -203,15 +208,23 @@ def build_usage_table(by_model: dict[str, ModelStats], total: ModelStats) -> Tab
     t.add_column("Output", justify="right")
     t.add_column("Cost", justify="right", style="yellow")
 
-    for model, ms in _sorted(by_model):
+    for provider, ps in _sorted(by_provider):
         t.add_row(
-            model, str(ms.requests),
-            fmt_tok(ms.fresh_input), fmt_tok(ms.cache_read),
-            fmt_tok(ms.cache_creation), fmt_tok(ms.output_tokens),
-            fmt_cost(ms.cost),
+            provider, str(ps.requests),
+            fmt_tok(ps.fresh_input), fmt_tok(ps.cache_read),
+            fmt_tok(ps.cache_creation), fmt_tok(ps.output_tokens),
+            fmt_cost(ps.cost),
         )
+        # Show model breakdown per provider
+        for model, ms in sorted(ps.model_breakdown.items(), key=lambda x: x[1].cost, reverse=True):
+            t.add_row(
+                f"  └ {model}", str(ms.requests),
+                fmt_tok(ms.fresh_input), fmt_tok(ms.cache_read),
+                fmt_tok(ms.cache_creation), fmt_tok(ms.output_tokens),
+                fmt_cost(ms.cost),
+            )
 
-    if len(by_model) > 1:
+    if len(by_provider) > 1:
         t.add_section()
         t.add_row(
             Text("TOTAL", style="bold"),
@@ -223,27 +236,27 @@ def build_usage_table(by_model: dict[str, ModelStats], total: ModelStats) -> Tab
     return t
 
 
-def build_cache_table(by_model: dict[str, ModelStats], total: ModelStats) -> Table:
+def build_cache_table(by_provider: dict[str, ProviderStats], total: ProviderStats) -> Table:
     """Table 2: cache efficiency metrics."""
-    t = Table(title="Cache Analysis", expand=True, show_lines=False)
-    t.add_column("Model", style="cyan", no_wrap=True)
+    t = Table(title="Cache Analysis by Provider", expand=True, show_lines=False)
+    t.add_column("Provider", style="cyan", no_wrap=True)
     t.add_column("Hit%", justify="right")
     t.add_column("R/W", justify="right")
     t.add_column("Fresh%", justify="right")
     t.add_column("Cache R%", justify="right")
     t.add_column("Cache W%", justify="right")
 
-    for model, ms in _sorted(by_model):
-        inp = ms.input_tokens
-        fresh = ms.fresh_input
-        hit = (ms.cache_read / inp * 100) if inp > 0 else 0
-        rw = (ms.cache_read / ms.cache_creation) if ms.cache_creation > 0 else None
+    for provider, ps in _sorted(by_provider):
+        inp = ps.input_tokens
+        fresh = ps.fresh_input
+        hit = (ps.cache_read / inp * 100) if inp > 0 else 0
+        rw = (ps.cache_read / ps.cache_creation) if ps.cache_creation > 0 else None
         fresh_pct = (fresh / inp * 100) if inp > 0 else 0
-        cr_pct = (ms.cache_read / inp * 100) if inp > 0 else 0
-        cw_pct = (ms.cache_creation / inp * 100) if inp > 0 else 0
+        cr_pct = (ps.cache_read / inp * 100) if inp > 0 else 0
+        cw_pct = (ps.cache_creation / inp * 100) if inp > 0 else 0
 
         t.add_row(
-            model,
+            provider,
             fmt_pct(hit),
             fmt_ratio(rw),
             fmt_pct(fresh_pct, invert=True),
@@ -251,7 +264,25 @@ def build_cache_table(by_model: dict[str, ModelStats], total: ModelStats) -> Tab
             fmt_pct(cw_pct, invert=True),
         )
 
-    if len(by_model) > 1:
+        for model, ms in sorted(ps.model_breakdown.items(), key=lambda x: x[1].cost, reverse=True):
+            inp2 = ms.input_tokens
+            fresh2 = ms.fresh_input
+            hit2 = (ms.cache_read / inp2 * 100) if inp2 > 0 else 0
+            rw2 = (ms.cache_read / ms.cache_creation) if ms.cache_creation > 0 else None
+            fresh_pct2 = (fresh2 / inp2 * 100) if inp2 > 0 else 0
+            cr_pct2 = (ms.cache_read / inp2 * 100) if inp2 > 0 else 0
+            cw_pct2 = (ms.cache_creation / inp2 * 100) if inp2 > 0 else 0
+
+            t.add_row(
+                f"  └ {model}",
+                fmt_pct(hit2),
+                fmt_ratio(rw2),
+                fmt_pct(fresh_pct2, invert=True),
+                fmt_pct(cr_pct2),
+                fmt_pct(cw_pct2, invert=True),
+            )
+
+    if len(by_provider) > 1:
         inp = total.input_tokens
         fresh = total.fresh_input
         hit = (total.cache_read / inp * 100) if inp > 0 else 0
@@ -272,29 +303,41 @@ def build_cache_table(by_model: dict[str, ModelStats], total: ModelStats) -> Tab
     return t
 
 
-def build_sla_table(by_model: dict[str, ModelStats], total: ModelStats) -> Table:
+def build_sla_table(by_provider: dict[str, ProviderStats], total: ProviderStats) -> Table:
     """Table 3: service-level / cost-efficiency metrics."""
-    t = Table(title="SLA", expand=True, show_lines=False)
-    t.add_column("Model", style="cyan", no_wrap=True)
+    t = Table(title="SLA by Provider", expand=True, show_lines=False)
+    t.add_column("Provider", style="cyan", no_wrap=True)
     t.add_column("Req", justify="right")
     t.add_column("¥/MTok", justify="right")
     t.add_column("Lat.", justify="right")
     t.add_column("Err", justify="right", style="red")
     t.add_column("Err%", justify="right")
 
-    for model, ms in _sorted(by_model):
-        unit = (ms.cost / ms.total_tokens * 1_000_000) if ms.total_tokens > 0 else None
-        err_rate = ms.errors / ms.requests * 100 if ms.requests > 0 else 0
+    for provider, ps in _sorted(by_provider):
+        unit = (ps.cost / ps.total_tokens * 1_000_000) if ps.total_tokens > 0 else None
+        err_rate = ps.errors / ps.requests * 100 if ps.requests > 0 else 0
         t.add_row(
-            model,
-            str(ms.requests),
+            provider,
+            str(ps.requests),
             fmt_unit_cost(unit),
-            fmt_latency(ms),
-            Text(str(ms.errors), style="red") if ms.errors > 0 else Text("0", style="dim"),
+            fmt_latency(ps),
+            Text(str(ps.errors), style="red") if ps.errors > 0 else Text("0", style="dim"),
             fmt_pct(err_rate, invert=True),
         )
 
-    if len(by_model) > 1:
+        for model, ms in sorted(ps.model_breakdown.items(), key=lambda x: x[1].cost, reverse=True):
+            unit2 = (ms.cost / ms.total_tokens * 1_000_000) if ms.total_tokens > 0 else None
+            err_rate2 = ms.errors / ms.requests * 100 if ms.requests > 0 else 0
+            t.add_row(
+                f"  └ {model}",
+                str(ms.requests),
+                fmt_unit_cost(unit2),
+                fmt_latency(ms),
+                Text(str(ms.errors), style="red") if ms.errors > 0 else Text("0", style="dim"),
+                fmt_pct(err_rate2, invert=True),
+            )
+
+    if len(by_provider) > 1:
         unit = (total.cost / total.total_tokens * 1_000_000) if total.total_tokens > 0 else None
         err_rate = total.errors / total.requests * 100 if total.requests > 0 else 0
         t.add_section()
@@ -317,6 +360,7 @@ def main() -> None:
 
     api_key = os.environ.get("API_KEY") or None
     limit = int(os.environ.get("LIMIT", "1000"))
+    provider_filter = os.environ.get("PROVIDER") or None
     model = os.environ.get("MODEL") or None
     since = os.environ.get("SINCE") or None
     until = os.environ.get("UNTIL") or None
@@ -339,13 +383,20 @@ def main() -> None:
         console.print("[dim]No metrics records found.[/]")
         return
 
-    by_model, total = aggregate(records)
+    # Filter by provider if specified
+    if provider_filter:
+        records = [r for r in records if r.get("provider_key") == provider_filter]
+        if not records:
+            console.print(f"[yellow]No records for provider '{provider_filter}'.[/]")
+            return
 
-    console.print(build_usage_table(by_model, total))
+    by_provider, total = aggregate(records)
+
+    console.print(build_usage_table(by_provider, total))
     console.print()
-    console.print(build_cache_table(by_model, total))
+    console.print(build_cache_table(by_provider, total))
     console.print()
-    console.print(build_sla_table(by_model, total))
+    console.print(build_sla_table(by_provider, total))
     console.print(f"\n[dim]{len(records)} records from {base_url}[/]")
 
 

@@ -95,6 +95,14 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 
 	record.Model = responsesRequest.Model
 	resolvedRoute, resolveErr := server.resolveModelOrFallback(responsesRequest.Model)
+	if resolveErr == nil {
+		var candidateInfo string
+		for i, c := range resolvedRoute.Candidates {
+			if i > 0 { candidateInfo += ", " }
+			candidateInfo += c.ProviderKey + "=" + c.UpstreamModel + "(p" + fmt.Sprint(i) + ")"
+		}
+		log.Debug("路由解析结果", "model", responsesRequest.Model, "candidates", candidateInfo)
+	}
 	if resolveErr != nil {
 		log.Warn("请求了未知模型", "model", responsesRequest.Model)
 		payload := openai.ErrorResponse{Error: openai.ErrorObject{
@@ -131,6 +139,9 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 
 	// Protocol branch: get preferred candidate.
 	preferred, ok := resolvedRoute.Preferred()
+	if ok {
+		log.Debug("选中提供商", "model", responsesRequest.Model, "provider", preferred.ProviderKey, "upstream", preferred.UpstreamModel)
+	}
 	if !ok {
 		log.Error("模型解析结果无可用提供商", "model", responsesRequest.Model)
 		payload := openai.ErrorResponse{Error: openai.ErrorObject{

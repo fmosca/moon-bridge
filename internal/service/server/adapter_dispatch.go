@@ -363,6 +363,40 @@ func (s *Server) handleWithAdapters(
 				CacheCreationInputTokens: 0,
 			})
 		}
+
+		// Log detailed metrics for non-streaming request.
+		inputTotal := coreResp.Usage.InputTokens
+		cachedInput := coreResp.Usage.CachedInputTokens
+		freshInput := inputTotal - cachedInput
+		if freshInput < 0 {
+			freshInput = 0
+		}
+		outputTokens := coreResp.Usage.OutputTokens
+		var cacheHitRate float64
+		if inputTotal > 0 {
+			cacheHitRate = float64(cachedInput) / float64(inputTotal) * 100
+		}
+		reqDuration := time.Since(requestStart)
+		billingUsage := stats.BillingUsage{
+			FreshInputTokens:         freshInput,
+			OutputTokens:             outputTokens,
+			CacheCreationInputTokens: 0,
+			CacheReadInputTokens:     cachedInput,
+		}
+		reqCost := computeCostWithProviderPricing(s.providerMgr, s.stats, openAIReq.Model, preferred.UpstreamModel, preferred.ProviderKey, billingUsage)
+		log.Info("请求完成",
+			"request_model", openAIReq.Model,
+			"actual_model", preferred.UpstreamModel,
+			"provider", preferred.ProviderKey,
+			"input_total", inputTotal,
+			"input_fresh", freshInput,
+			"input_cache_read", cachedInput,
+			"input_cache_write", 0,
+			"output_tokens", outputTokens,
+			"cache_hit_rate", fmt.Sprintf("%.1f%%", cacheHitRate),
+			"request_cost", reqCost,
+			"duration", reqDuration,
+		)
 	}
 }
 
@@ -607,10 +641,36 @@ func (s *Server) handleAdapterStream(
 		})
 	}
 
+	inputTotal := finalUsage.InputTokens
+	cachedInput := finalUsage.InputTokensDetails.CachedTokens
+	freshInput := inputTotal - cachedInput
+	if freshInput < 0 {
+		freshInput = 0
+	}
+	outputTokens := finalUsage.OutputTokens
+	var cacheHitRate float64
+	if inputTotal > 0 {
+		cacheHitRate = float64(cachedInput) / float64(inputTotal) * 100
+	}
+	reqDuration := time.Since(requestStart)
+	billingUsage := stats.BillingUsage{
+		FreshInputTokens:         freshInput,
+		OutputTokens:             outputTokens,
+		CacheCreationInputTokens: finalUsage.InputTokensDetails.CachedTokens,
+		CacheReadInputTokens:     0,
+	}
+	reqCost := computeCostWithProviderPricing(s.providerMgr, s.stats, openAIReq.Model, candidate.UpstreamModel, candidate.ProviderKey, billingUsage)
 	log.Info("流式请求完成",
 		"model", openAIReq.Model,
-		"input_tokens", finalUsage.InputTokens,
-		"output_tokens", finalUsage.OutputTokens,
+		"actual_model", candidate.UpstreamModel,
+		"provider", candidate.ProviderKey,
+		"input_total", inputTotal,
+		"input_fresh", freshInput,
+		"input_cached_tokens", cachedInput,
+		"output_tokens", outputTokens,
+		"cache_hit_rate", fmt.Sprintf("%.1f%%", cacheHitRate),
+		"request_cost", reqCost,
+		"duration", reqDuration,
 	)
 
 	// Update trace record with the final response data.

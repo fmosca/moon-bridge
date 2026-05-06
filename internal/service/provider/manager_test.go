@@ -252,6 +252,47 @@ func TestResolveModel_Preferred(t *testing.T) {
 	}
 }
 
+func TestResolveModel_OffersPriorityOverridesModelNames(t *testing.T) {
+	manager, err := NewProviderManager(map[string]ProviderConfig{
+		"low-priority": {
+			BaseURL:    "https://low.test",
+			APIKey:     "key-low",
+			ModelNames: []string{"shared-model"},
+			Offers: []config.OfferEntry{
+				{Model: "shared-model", Priority: 10},
+			},
+		},
+		"high-priority": {
+			BaseURL:    "https://high.test",
+			APIKey:     "key-high",
+			ModelNames: []string{"shared-model"},
+			Offers: []config.OfferEntry{
+				{Model: "shared-model", Priority: 1},
+			},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewProviderManager() error = %v", err)
+	}
+
+	route, err := manager.ResolveModel("shared-model")
+	if err != nil {
+		t.Fatalf("ResolveModel() error = %v", err)
+	}
+	if len(route.Candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(route.Candidates))
+	}
+	// high-priority (Offer priority 1) should come before low-priority (Offer priority 10)
+	// ModelNames entries (priority 0) must NOT override Offer priorities.
+	if route.Candidates[0].ProviderKey != "high-priority" {
+		t.Errorf("expected first candidate 'high-priority', got '%s' (ModelNames must not override Offer priorities)",
+			route.Candidates[0].ProviderKey)
+	}
+	if route.Candidates[1].ProviderKey != "low-priority" {
+		t.Errorf("expected second candidate 'low-priority', got '%s'", route.Candidates[1].ProviderKey)
+	}
+}
+
 func TestResolveModel_ProviderPriority(t *testing.T) {
 	manager, err := NewProviderManager(map[string]ProviderConfig{
 		"cheap": {

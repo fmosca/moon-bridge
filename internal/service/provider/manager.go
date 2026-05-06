@@ -131,10 +131,25 @@ func NewProviderManager(providerCfgs map[string]ProviderConfig, routes map[strin
 	// Build reverse index: model name -> provider keys (for dynamic model routing).
 	pm.modelProviders = make(map[string][]modelProviderEntry, len(providerCfgs))
 	for key, cfg := range providerCfgs {
+		// Build set of model names already covered by Offers (with proper priority).
+		offerModels := make(map[string]bool, len(cfg.Offers))
+		for _, offer := range cfg.Offers {
+			m := offer.Model
+			if m == "" {
+				m = offer.UpstreamName
+			}
+			if m != "" {
+				offerModels[m] = true
+			}
+		}
+		// Index from ModelNames (backward compat), skipping models already in Offers.
 		for _, modelName := range cfg.ModelNames {
+			if offerModels[modelName] {
+				continue
+			}
 			pm.modelProviders[modelName] = append(pm.modelProviders[modelName], modelProviderEntry{providerKey: key, priority: 0})
 		}
-		// Also index from Offers.
+		// Index from Offers with actual priority.
 		for _, offer := range cfg.Offers {
 			modelName := offer.Model
 			if modelName == "" {
