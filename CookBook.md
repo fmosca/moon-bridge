@@ -383,7 +383,7 @@ go run ./cmd/moonbridge -config /path/to/config.yml 2>&1 | head -30
 |------|------|
 | `no such file or directory` | config.yml 路径不对 |
 | `cannot unmarshal` | YAML 格式错误 |
-| `unsupported protocol` | protocol 只能是 `anthropic` 或 `openai-response` |
+| `unsupported protocol` | protocol 必须是 `anthropic` / `openai-response` / `google-genai` / `openai-chat` 之一 |
 | `connection refused` | Provider 的 base_url 写错或不可达 |
 | `401` / `403` | API Key 不对 |
 | `402` | DeepSeek 余额不足 |

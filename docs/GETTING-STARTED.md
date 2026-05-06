@@ -1,75 +1,129 @@
 # Getting Started
 
-> 5 分钟跑通第一个对话。更多用法见 [CookBook.md](../CookBook.md)。
+> 5 分钟跑通第一个对话。更多用法见 [CookBook.md](CookBook.md)。
 
 ## 1. 安装
 
+### 前置要求
+
+- **Go 1.25+** — 用于编译和运行
+- 一个上游 LLM Provider 的 API Key（如 DeepSeek、OpenAI、Anthropic、Kimi 等）
+
+### 获取代码
+
 ```bash
-git clone <repo> && cd moonbridge
-go mod download
+git clone https://github.com/ZhiYi-R/moon-bridge.git
+cd moon-bridge
+```
+
+### 编译
+
+```bash
 go build -o moonbridge ./cmd/moonbridge
 ```
 
-或下载预编译二进制（GitHub Releases）。
-
-## 2. 创建配置
+或者直接运行：
 
 ```bash
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/moonbridge"
-cp config.example.yml "${XDG_CONFIG_HOME:-$HOME/.config}/moonbridge/config.yml"
+go run ./cmd/moonbridge -config config.yml
 ```
 
-编辑 `config.yml`，填入至少一个 Provider 的 `api_key`：
+## 2. 配置
+
+复制示例配置并编辑：
+
+```bash
+cp config.example.yml config.yml
+```
+
+详细配置说明见 [CONFIGURATION.md](CONFIGURATION.md)。
+
+### 最小配置示例
+
+以 DeepSeek 为例，编辑 `config.yml`：
 
 ```yaml
+mode: "Transform"
+server:
+  addr: "127.0.0.1:38440"
+
+defaults:
+  model: "deepseek-chat"
+
+models:
+  deepseek-chat:
+    context_window: 1000000
+
 providers:
-  my-provider:
-    base_url: "https://api.example.com"
-    api_key: "sk-your-api-key-here"
+  deepseek:
+    base_url: "https://api.deepseek.com/anthropic"
+    api_key: "sk-你的-DeepSeek-API-Key"
+    version: "2023-06-01"
+    protocol: "anthropic"
+    offers:
+      - model: deepseek-chat
 
 routes:
   default:
-    model: my-model
-    provider: my-provider
-
-defaults:
-  model: default
+    model: deepseek-chat
+    provider: deepseek
 ```
+
+### 与 Codex CLI 搭配使用
+
+在 Codex Desktop 配置中设置 Moon Bridge 为 OpenAI API Base URL：
+
+```toml
+[openai]
+base_url = "http://127.0.0.1:38440/v1"
+api_key = "any-non-empty-value"
+```
+
+**支持四种协议的上游 Provider：**
+
+| 协议 | 配置 protocol | 示例 Provider |
+|------|---------------|---------------|
+| Anthropic Messages | `anthropic` | DeepSeek、Kimi、Anthropic |
+| OpenAI Responses | `openai-response` | OpenAI（直通） |
+| Google GenAI (Gemini) | `google-genai` | Google Gemini |
+| OpenAI Chat | `openai-chat` | 兼容 OpenAI Chat 的 API |
 
 ## 3. 启动
 
 ```bash
-go run ./cmd/moonbridge
+go run ./cmd/moonbridge -config config.yml
 ```
 
-默认监听 `127.0.0.1:38440`。
+日志输出：
 
-## 4. 验证
+```
+INFO HTTP 服务器监听中 addr=127.0.0.1:38440
+```
+
+## 4. 测试连通性
 
 ```bash
-# 查看可用模型
-curl http://localhost:38440/v1/models
-
-# 发送测试请求
-curl http://localhost:38440/v1/responses \
+curl http://127.0.0.1:38440/v1/responses \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer any-value" \
   -d '{
     "model": "default",
-    "input": "你好，用一句话介绍自己。",
-    "max_output_tokens": 100
+    "input": "Hello"
   }'
 ```
 
-## 5. 与 Codex CLI 集成
+如果配置正确，将返回 LLM 的响应。
+
+## 5. 验证模型列表
 
 ```bash
-./scripts/start_codex_with_moonbridge.sh --project-directory "$PWD"
+curl http://127.0.0.1:38440/v1/models
 ```
 
-或手动配置 `~/.codex/config.toml`。详见 [README.md](../README.md#与-codex-cli-一起使用)。
+返回已注册的模型列表，包括来自所有 Provider 的模型及其能力描述。
 
 ## 下一步
 
-- [完整配置指南](CONFIGURATION.md)
-- [架构说明](architecture.md)
-- [API 参考](api.md)
+- [CookBook.md](CookBook.md) — 常见用法场景
+- [ARCHITECTURE.md](ARCHITECTURE.md) — 系统架构详解
+- [CONFIGURATION.md](CONFIGURATION.md) — 完整配置指南
