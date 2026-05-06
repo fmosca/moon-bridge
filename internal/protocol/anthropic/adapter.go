@@ -122,9 +122,10 @@ func (a *AnthropicProviderAdapter) FromCoreRequest(ctx context.Context, req *for
 		for _, t := range req.Tools {
 		anthropicReq.Tools = append(anthropicReq.Tools, Tool{
 			Name:        t.Name,
+			Type:        "custom",
 			Description: t.Description,
 			InputSchema: cleanSchema(t.InputSchema),
-			})
+		})
 		}
 	}
 
