@@ -350,7 +350,7 @@ func (s *Server) handleWithAdapters(
 				OutputTokens:             coreResp.Usage.OutputTokens,
 				CacheCreationInputTokens: 0,
 				CacheReadInputTokens:     coreResp.Usage.CachedInputTokens,
-			}, false)
+			}, true) // input tokens now include cache (normalized at adapter level)
 		}
 		s.onRequestCompleted(openAIReq.Model, preferred.UpstreamModel, preferred.ProviderKey, requestStart, usage, 0, "success", "")
 
@@ -636,8 +636,8 @@ func (s *Server) handleAdapterStream(
 		s.stats.Record(openAIReq.Model, candidate.UpstreamModel, stats.Usage{
 			InputTokens:              finalUsage.InputTokens,
 			OutputTokens:             finalUsage.OutputTokens,
-			CacheCreationInputTokens: finalUsage.InputTokensDetails.CachedTokens,
-			CacheReadInputTokens:     0,
+			CacheCreationInputTokens: 0,
+			CacheReadInputTokens:     finalUsage.InputTokensDetails.CachedTokens,
 		})
 	}
 
@@ -689,7 +689,7 @@ func (s *Server) handleAdapterStream(
 				OutputTokens:             finalUsage.OutputTokens,
 				CacheCreationInputTokens: 0,
 				CacheReadInputTokens:     finalUsage.InputTokensDetails.CachedTokens,
-			}, false)
+			}, true) // input tokens now include cache (normalized at adapter level)
 		}
 		s.onRequestCompleted(openAIReq.Model, candidate.UpstreamModel, candidate.ProviderKey, requestStart, usage, 0, "success", "")
 	}
@@ -867,4 +867,3 @@ func hasThinkingBlock(content []anthropic.ContentBlock) bool {
 	}
 	return false
 }
-

@@ -142,10 +142,28 @@ func BuildModelInfoFromProviderModel(slug string, ownedBy string, meta config.Mo
 
 // BuildModelInfosFromConfig returns Codex model catalog entries.
 // Directly iterates cfg.Models (canonical model definitions) and appends route aliases.
+// Models without a provider offer or route are excluded — they are dead entries.
 func BuildModelInfosFromConfig(cfg config.Config) []ModelInfo {
+	// Build set of model names that have at least one provider offer.
+	offeredModels := make(map[string]bool)
+	for _, def := range cfg.ProviderDefs {
+		for _, offer := range def.Offers {
+			offeredModels[offer.Model] = true
+		}
+	}
+	// Build set of model names targeted by routes.
+	routeModels := make(map[string]bool)
+	for _, route := range cfg.Routes {
+		if route.Model != "" {
+			routeModels[route.Model] = true
+		}
+	}
+	// Filter: only include models that are offered by a provider or targeted by a route.
 	modelSlugs := make([]string, 0, len(cfg.Models))
 	for slug := range cfg.Models {
-		modelSlugs = append(modelSlugs, slug)
+		if offeredModels[slug] || routeModels[slug] {
+			modelSlugs = append(modelSlugs, slug)
+		}
 	}
 	sort.Strings(modelSlugs)
 

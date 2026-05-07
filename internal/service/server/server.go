@@ -18,6 +18,8 @@ import (
 	"moonbridge/internal/foundation/logger"
 	"moonbridge/internal/protocol/openai"
 	"moonbridge/internal/protocol/anthropic"
+	"moonbridge/internal/protocol/chat"
+	"moonbridge/internal/protocol/google"
 	"moonbridge/internal/protocol/format"
 	"moonbridge/internal/service/api"
 	"moonbridge/internal/service/provider"
@@ -39,6 +41,8 @@ type Config struct {
 	Provider         Provider
 	ProviderMgr      *provider.ProviderManager // optional; used for multi-provider routing
 	OpenAIHTTPClient *http.Client
+	ChatClients      map[string]*chat.Client
+	GoogleClients    map[string]*google.Client
 	Tracer           *mbtrace.Tracer
 	TraceErrors      io.Writer
 	Stats            *stats.SessionStats
@@ -53,6 +57,8 @@ type Server struct {
 	provider         Provider
 	providerMgr      *provider.ProviderManager
 	openAIHTTP       *http.Client
+	chatClients      map[string]*chat.Client
+	googleClients    map[string]*google.Client
 	tracer           *mbtrace.Tracer
 	traceErrors      io.Writer
 	stats            *stats.SessionStats
@@ -83,6 +89,8 @@ func New(cfg Config) *Server {
 		sessions:         map[string]serverSession{},
 		sessionPruneStop: make(chan struct{}),
 		appConfig:        cfg.AppConfig,
+		chatClients:      cfg.ChatClients,
+		googleClients:    cfg.GoogleClients,
 		runtime:          cfg.Runtime,
 		store:            cfg.Store,
 	}

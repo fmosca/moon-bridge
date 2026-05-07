@@ -305,6 +305,11 @@ func (a *OpenAIAdapter) StreamBuffer() []StreamEvent {
 func (a *OpenAIAdapter) streamLoop(ctx context.Context, coreReq *format.CoreRequest, events <-chan format.CoreStreamEvent, out chan<- StreamEvent) {
 	defer close(out)
 
+	// Reset stream event buffer for this request.
+	a.streamMu.Lock()
+	a.streamEvents = nil
+	a.streamMu.Unlock()
+
 	// send buffers the event for trace capture before writing to the output channel.
 	send := func(ev StreamEvent) {
 		a.bufferStreamEvent(ev)
@@ -524,13 +529,32 @@ func (a *OpenAIAdapter) streamLoop(ctx context.Context, coreReq *format.CoreRequ
 			text := contentText[index]
 			delete(contentText, index)
 
+			// Ensure output item exists (may not be created if no deltas arrived).
+			if _, hasOutput := outputIndexes[index]; !hasOutput {
+				id := itemIDs[index]
+				if id == "" {
+					id = fmt.Sprintf("msg_item_%d", index)
+					itemIDs[index] = id
+				}
+				outputIndexes[index] = len(response.Output)
+				response.Output = append(response.Output, OutputItem{
+					Type:    "message",
+					ID:      id,
+					Status:  "in_progress",
+					Role:    "assistant",
+					Content: []ContentPart{{Type: "output_text"}},
+				})
+			}
+
+			outIdx := outputIndexes[index]
+
 			send(StreamEvent{
 				Event: "response.output_text.done",
 				Data: OutputTextDoneEvent{
 					Type:           "response.output_text.done",
 					SequenceNumber: next(),
 					ItemID:         itemIDs[index],
-					OutputIndex:    outputIndexes[index],
+					OutputIndex:    outIdx,
 					ContentIndex:   0,
 					Text:           text,
 				},
@@ -545,8 +569,8 @@ func (a *OpenAIAdapter) streamLoop(ctx context.Context, coreReq *format.CoreRequ
 				Data: OutputItemEvent{
 					Type:           "response.output_item.done",
 					SequenceNumber: next(),
-					OutputIndex:    outputIndexes[index],
-					Item:           response.Output[outputIndexes[index]],
+					OutputIndex:    outIdx,
+					Item:           response.Output[outIdx],
 				},
 			})
 
@@ -694,6 +718,21 @@ func (a *OpenAIAdapter) streamLoop(ctx context.Context, coreReq *format.CoreRequ
 			// 1. Text/reasoning block done — emit output_text.done + content_part.done + output_item.done.
 			if text, ok := contentText[index]; ok {
 				itemID := itemIDs[index]
+				// Ensure output item exists (may not be created if no deltas arrived).
+				if _, hasOutput := outputIndexes[index]; !hasOutput {
+					if itemID == "" {
+						itemID = fmt.Sprintf("msg_item_%d", index)
+						itemIDs[index] = itemID
+					}
+					outputIndexes[index] = len(response.Output)
+					response.Output = append(response.Output, OutputItem{
+						Type:    "message",
+						ID:      itemID,
+						Status:  "in_progress",
+						Role:    "assistant",
+						Content: []ContentPart{{Type: "output_text"}},
+					})
+				}
 				outputIndex := outputIndexes[index]
 
 				// output_text.done

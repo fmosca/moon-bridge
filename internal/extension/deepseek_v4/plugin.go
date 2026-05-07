@@ -3,7 +3,6 @@ package deepseekv4
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -81,36 +80,7 @@ func ConfigSpecs() []config.ExtensionConfigSpec {
 }
 
 func ValidateConfig(cfg config.Config) error {
-	for alias, route := range cfg.Routes {
-		if !cfg.ExtensionEnabled(PluginName, alias) {
-			continue
-		}
-		if err := validateAnthropicProvider(cfg, route.Provider, alias); err != nil {
-			return err
-		}
-	}
-	for providerKey, def := range cfg.ProviderDefs {
-		for modelName := range def.Models {
-			alias := providerKey + "/" + modelName
-			if !cfg.ExtensionEnabled(PluginName, alias) {
-				continue
-			}
-			if err := validateAnthropicProvider(cfg, providerKey, alias); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func validateAnthropicProvider(cfg config.Config, providerKey string, modelAlias string) error {
-	def, ok := cfg.ProviderDefs[providerKey]
-	if !ok {
-		return nil
-	}
-	if def.Protocol != "" && def.Protocol != config.ProtocolAnthropic {
-		return fmt.Errorf("extensions.%s enabled for %s requires anthropic protocol (provider %s uses %s)", PluginName, modelAlias, providerKey, def.Protocol)
-	}
+	// Protocol constraint removed — plugins operate on protocol-agnostic Core format.
 	return nil
 }
 

@@ -48,9 +48,15 @@ func NewClient(cfg ClientConfig) *Client {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	// Normalize: if base URL already ends with /v1, strip it since
+	// newRequest always appends /v1/chat/completions.
+	if strings.HasSuffix(baseURL, "/v1") {
+		baseURL = baseURL[:len(baseURL)-3]
+	}
 
 	return &Client{
-		baseURL:   strings.TrimRight(baseURL, "/"),
+		baseURL:   baseURL,
 		apiKey:    cfg.APIKey,
 		version:   strings.TrimSpace(cfg.Version),
 		userAgent: strings.TrimSpace(cfg.UserAgent),

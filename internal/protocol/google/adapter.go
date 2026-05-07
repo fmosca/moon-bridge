@@ -29,6 +29,7 @@ type GeminiProviderAdapter struct {
 	hooks format.CorePluginHooks
 
 	streamMu      sync.Mutex
+	streamEvents  []GenerateContentResponse
 	prevSnapshots map[int]string // candidate index → previous text for delta computation
 }
 
@@ -162,6 +163,10 @@ func (a *GeminiProviderAdapter) ToCoreResponse(ctx context.Context, resp any) (*
 			InputTokens:  geminiResp.UsageMetadata.PromptTokenCount,
 			OutputTokens: geminiResp.UsageMetadata.CandidatesTokenCount,
 			TotalTokens:  geminiResp.UsageMetadata.TotalTokenCount,
+			// CachedInputTokens from the cached content count; Google includes
+			// cached tokens in prompt_token_count (total), and reports them
+			// separately here.
+			CachedInputTokens: geminiResp.UsageMetadata.CachedContentTokenCount,
 		}
 	}
 
@@ -169,6 +174,20 @@ func (a *GeminiProviderAdapter) ToCoreResponse(ctx context.Context, resp any) (*
 }
 
 // =========================================================================
+// bufferStreamEvent buffers raw GenerateContentResponse for trace capture.
+func (a *GeminiProviderAdapter) bufferStreamEvent(ev GenerateContentResponse) {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	a.streamEvents = append(a.streamEvents, ev)
+}
+
+// StreamBuffer returns the buffered stream events for trace capture.
+func (a *GeminiProviderAdapter) StreamBuffer() []GenerateContentResponse {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	return a.streamEvents
+}
+
 // ToCoreStream — <-chan GenerateContentResponse → <-chan CoreStreamEvent
 // =========================================================================
 
@@ -191,6 +210,11 @@ func (a *GeminiProviderAdapter) ToCoreStream(ctx context.Context, src any) (<-ch
 	}
 
 	events := make(chan format.CoreStreamEvent, 64)
+
+	// Initialize stream event buffer for trace capture.
+	a.streamMu.Lock()
+	a.streamEvents = make([]GenerateContentResponse, 0, 64)
+	a.streamMu.Unlock()
 
 	go func() {
 		defer close(events)
@@ -221,6 +245,7 @@ func (a *GeminiProviderAdapter) ToCoreStream(ctx context.Context, src any) (<-ch
 			case <-ctx.Done():
 				return
 			case chunk, ok := <-ch:
+				a.bufferStreamEvent(chunk)
 				if !ok {
 					// Channel closed — emit completion if not already done.
 					if !seenCompletion {
@@ -302,6 +327,7 @@ func (a *GeminiProviderAdapter) ToCoreStream(ctx context.Context, src any) (<-ch
 						InputTokens:  chunk.UsageMetadata.PromptTokenCount,
 						OutputTokens: chunk.UsageMetadata.CandidatesTokenCount,
 						TotalTokens:  chunk.UsageMetadata.TotalTokenCount,
+						CachedInputTokens: chunk.UsageMetadata.CachedContentTokenCount,
 					}
 				}
 			}

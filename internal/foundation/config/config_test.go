@@ -497,8 +497,19 @@ extensions:
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := config.LoadFromYAMLWithOptions([]byte(input), config.LoadOptions{ExtensionSpecs: builtinExtensionSpecsForTest()}); err == nil {
-				t.Fatal("LoadFromYAML() error = nil, want validation error")
+			// Cases that are now valid after removing the anthropic protocol constraint from plugins.
+			switch name {
+			case "deepseek extension on openai-response protocol",
+				"global deepseek extension on openai-response protocol",
+				"visual provider on openai-response protocol":
+				// Plugin protocol constraint removed — plugins operate on protocol-agnostic Core format.
+				if _, err := config.LoadFromYAMLWithOptions([]byte(input), config.LoadOptions{ExtensionSpecs: builtinExtensionSpecsForTest()}); err != nil {
+					t.Fatalf("LoadFromYAML() error = %v, want nil (protocol constraint removed)", err)
+				}
+			default:
+				if _, err := config.LoadFromYAMLWithOptions([]byte(input), config.LoadOptions{ExtensionSpecs: builtinExtensionSpecsForTest()}); err == nil {
+					t.Fatal("LoadFromYAML() error = nil, want validation error")
+				}
 			}
 		})
 	}

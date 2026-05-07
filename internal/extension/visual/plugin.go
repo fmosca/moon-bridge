@@ -129,9 +129,8 @@ func validateModelConfig(appCfg config.Config, modelAlias string) error {
 	if !ok {
 		return fmt.Errorf("extensions.%s.config.provider references unknown provider %q", PluginName, cfg.Provider)
 	}
-	if def.Protocol != "" && def.Protocol != config.ProtocolAnthropic {
-		return fmt.Errorf("extensions.%s.config.provider %q requires anthropic protocol (uses %s)", PluginName, cfg.Provider, def.Protocol)
-	}
+	// Protocol constraint removed — visual extension operates on Core format.
+	_ = def
 	return nil
 }
 

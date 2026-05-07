@@ -199,9 +199,36 @@ func runTransform(ctx context.Context, cfg config.Config, errors io.Writer) erro
 
 	slog.Info("Adapter dispatch path enabled", "registry", "format.Registry")
 
+	// Build protocol-specific HTTP clients from provider configs.
+	chatClients := make(map[string]*chat.Client, len(cfg.ProviderDefs))
+	googleClients := make(map[string]*google.Client, len(cfg.ProviderDefs))
+	for key, def := range cfg.ProviderDefs {
+		switch def.Protocol {
+		case config.ProtocolOpenAIChat:
+			chatClients[key] = chat.NewClient(chat.ClientConfig{
+				BaseURL:   def.BaseURL,
+				APIKey:    def.APIKey,
+				UserAgent: def.UserAgent,
+			})
+			slog.Debug("chat client created", "provider", key)
+		case config.ProtocolGoogleGenAI:
+			googleClients[key] = google.NewClient(google.ClientConfig{
+				BaseURL:   def.BaseURL,
+				APIKey:    def.APIKey,
+				Project:   def.Project,
+				Location:  def.Location,
+				Version:   def.APIVersion,
+				UserAgent: def.UserAgent,
+			})
+			slog.Debug("google client created", "provider", key)
+		}
+	}
+
 	handler := server.New(server.Config{
 		Provider:        fallbackProvider,
 		ProviderMgr:     providerMgr,
+		ChatClients:     chatClients,
+		GoogleClients:   googleClients,
 		Tracer:          tracer,
 		TraceErrors:     errors,
 		Stats:           sessionStats,

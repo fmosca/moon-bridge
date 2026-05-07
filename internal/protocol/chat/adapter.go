@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"moonbridge/internal/foundation/config"
 	"moonbridge/internal/protocol/format"
@@ -27,6 +28,9 @@ type ChatProviderAdapter struct {
 	cfg   config.Config
 	client *Client
 	hooks format.CorePluginHooks
+
+	streamMu      sync.Mutex
+	streamEvents  []ChatStreamChunk
 }
 
 // NewChatProviderAdapter creates a new ChatProviderAdapter.
@@ -176,12 +180,29 @@ func (a *ChatProviderAdapter) ToCoreResponse(ctx context.Context, resp any) (*fo
 			OutputTokens: chatResp.Usage.CompletionTokens,
 			TotalTokens:  chatResp.Usage.TotalTokens,
 		}
+		if chatResp.Usage.PromptTokensDetails != nil {
+			coreResp.Usage.CachedInputTokens = chatResp.Usage.PromptTokensDetails.CachedTokens
+		}
 	}
 
 	return coreResp, nil
 }
 
 // =========================================================================
+// bufferStreamEvent buffers raw ChatStreamChunk for trace capture.
+func (a *ChatProviderAdapter) bufferStreamEvent(ev ChatStreamChunk) {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	a.streamEvents = append(a.streamEvents, ev)
+}
+
+// StreamBuffer returns the buffered stream events for trace capture.
+func (a *ChatProviderAdapter) StreamBuffer() []ChatStreamChunk {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	return a.streamEvents
+}
+
 // ToCoreStream — <-chan ChatStreamChunk → <-chan CoreStreamEvent
 // =========================================================================
 
@@ -203,6 +224,11 @@ func (a *ChatProviderAdapter) ToCoreStream(ctx context.Context, src any) (<-chan
 	}
 
 	events := make(chan format.CoreStreamEvent, 64)
+
+	// Initialize stream event buffer for trace capture.
+	a.streamMu.Lock()
+	a.streamEvents = make([]ChatStreamChunk, 0, 64)
+	a.streamMu.Unlock()
 
 	go func() {
 		defer close(events)
@@ -232,6 +258,7 @@ func (a *ChatProviderAdapter) ToCoreStream(ctx context.Context, src any) (<-chan
 			case <-ctx.Done():
 				return
 			case chunk, ok := <-ch:
+				a.bufferStreamEvent(chunk)
 				if !ok {
 					// Channel closed — emit completion if not already done.
 					if !seenCompletion {
@@ -318,6 +345,9 @@ func (a *ChatProviderAdapter) ToCoreStream(ctx context.Context, src any) (<-chan
 						InputTokens:  chunk.Usage.PromptTokens,
 						OutputTokens: chunk.Usage.CompletionTokens,
 						TotalTokens:  chunk.Usage.TotalTokens,
+					}
+					if chunk.Usage.PromptTokensDetails != nil {
+						finalUsage.CachedInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 					}
 				}
 			}

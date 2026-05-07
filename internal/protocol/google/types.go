@@ -126,4 +126,7 @@ type UsageMetadata struct {
 	PromptTokenCount     int `json:"prompt_token_count"`
 	CandidatesTokenCount int `json:"candidates_token_count"`
 	TotalTokenCount      int `json:"total_token_count"`
+	// CachedContentTokenCount is the number of tokens served from context cache.
+	// Maps to CoreUsage.CachedInputTokens.
+	CachedContentTokenCount int `json:"cached_content_token_count,omitempty"`
 }

@@ -420,7 +420,8 @@ func (s *streamConverterState) convertEvent(events chan<- format.CoreStreamEvent
 	case "message_delta":
 		if ev.Usage != nil {
 			s.finalUsage = &format.CoreUsage{
-				InputTokens:       ev.Usage.InputTokens,
+				// Normalize InputTokens to total (fresh + cached).
+				InputTokens:       ev.Usage.InputTokens + ev.Usage.CacheReadInputTokens,
 				OutputTokens:      ev.Usage.OutputTokens,
 				CachedInputTokens: ev.Usage.CacheReadInputTokens,
 			}

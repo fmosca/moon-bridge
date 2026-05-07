@@ -161,16 +161,18 @@ func (server *Server) handleResponses(writer http.ResponseWriter, request *http.
 		return
 	}
 
-	// Adapter dispatch path for Anthropic protocol.
-	if server.adapterRegistry != nil && preferred.Protocol == config.ProtocolAnthropic {
-		server.handleWithAdapters(writer, request, responsesRequest, resolvedRoute)
-		return
+	// Adapter dispatch path for all non-OpenAI-Response protocols.
+	if server.adapterRegistry != nil {
+		if _, ok := server.adapterRegistry.GetProvider(preferred.Protocol); ok {
+			server.handleWithAdapters(writer, request, responsesRequest, resolvedRoute)
+			return
+		}
 	}
 
-	// No bridge path available. Require adapter registry for Anthropic protocol.
-	log.Error("no adapter path configured for Anthropic protocol", "model", responsesRequest.Model)
+	// No adapter path available.
+	log.Error("no adapter path configured", "model", responsesRequest.Model, "protocol", preferred.Protocol)
 	payload := openai.ErrorResponse{Error: openai.ErrorObject{
-		Message: "no adapter path configured for Anthropic protocol",
+		Message: fmt.Sprintf("no adapter path configured for protocol %q", preferred.Protocol),
 		Type:    "server_error",
 		Code:    "adapter_not_configured",
 	}}
