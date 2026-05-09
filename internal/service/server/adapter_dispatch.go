@@ -694,7 +694,24 @@ func (s *Server) handleAdapterStream(
 			return
 		}
 
-		stream, err := effectiveProvider.StreamMessage(ctx, *anthReq)
+		// StreamMessage on ProviderClient returns <-chan any, losing the concrete type.
+		// Get the inner anthropic.Client directly so ToCoreStream receives anthropic.Stream.
+		acc, ok := effectiveProvider.(provider.AnthropicClientAccessor)
+		if !ok {
+			log.Error("adapter stream: provider does not support AnthropicClientAccessor", "provider", candidate.ProviderKey)
+			payload := openai.ErrorResponse{
+				Error: openai.ErrorObject{
+					Message: "provider does not support anthropic streaming",
+					Type:    "server_error",
+					Code:    "provider_error",
+				},
+			}
+			streamRecord.Error = traceError("stream_accessor", fmt.Errorf("provider %q not AnthropicClientAccessor", candidate.ProviderKey))
+			streamRecord.OpenAIResponse = payload
+			writeOpenAIError(w, http.StatusInternalServerError, payload)
+			return
+		}
+		stream, err := acc.AnthropicClient().StreamMessage(ctx, *anthReq)
 		if err != nil {
 			log.Error("adapter stream: StreamMessage failed", "error", err)
 			payload := openai.ErrorResponse{

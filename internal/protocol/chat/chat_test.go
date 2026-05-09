@@ -2250,3 +2250,115 @@ func TestFromCoreRequest_DefaultContentBlockNoText(t *testing.T) {
 		t.Errorf("Content = %q, want 'hello'", content)
 	}
 }
+
+// ============================================================================
+// Regression tests for bug fixes
+// ============================================================================
+
+func TestNewClient_NormalizesBaseURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		urlSuffix string // appended to srv.URL
+		wantPath string  // expected request path
+	}{
+		{"no /v1", "", "/v1/chat/completions"},
+		{"with /v1", "/v1", "/v1/chat/completions"},
+		{"deep /v1", "/zen/go/v1", "/zen/go/v1/chat/completions"},
+		{"trailing slash", "/", "/v1/chat/completions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.Header().Set("content-type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[]}`))
+			}))
+			defer srv.Close()
+
+			client := chat.NewClient(chat.ClientConfig{
+				BaseURL: srv.URL + tt.urlSuffix,
+				APIKey:  "test-key",
+				Client:  srv.Client(),
+			})
+			_, err := client.CreateChat(context.Background(), &chat.ChatRequest{
+				Model:    "test",
+				Messages: []chat.ChatMessage{{Role: "user", Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotPath != tt.wantPath {
+				t.Errorf("request path = %q, want %q", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestFromCoreRequest_ToolCallArgumentsAreJSONString(t *testing.T) {
+	adapter := newTestAdapter()
+
+	req := &format.CoreRequest{
+		Model: "test-model",
+		Messages: []format.CoreMessage{
+			{
+				Role: "assistant",
+				Content: []format.CoreContentBlock{
+					{
+						Type:      "tool_use",
+						ToolUseID: "call_123",
+						ToolName:  "get_weather",
+						ToolInput: json.RawMessage(`{"city":"Paris"}`),
+					},
+				},
+			},
+		},
+	}
+
+	result, err := adapter.FromCoreRequest(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chatReq, ok := result.(*chat.ChatRequest)
+	if !ok {
+		t.Fatalf("expected *ChatRequest, got %T", result)
+	}
+
+	if len(chatReq.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(chatReq.Messages))
+	}
+
+	msg := chatReq.Messages[0]
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(msg.ToolCalls))
+	}
+
+	tc := msg.ToolCalls[0]
+	if tc.ID != "call_123" {
+		t.Errorf("ToolCall.ID = %q, want call_123", tc.ID)
+	}
+	if tc.Function.Name != "get_weather" {
+		t.Errorf("ToolCall.Function.Name = %q, want get_weather", tc.Function.Name)
+	}
+
+	// CRITICAL: arguments must be a JSON string (including quotes), not a raw object
+	argsStr := string(tc.Function.Arguments)
+	if !strings.HasPrefix(argsStr, `"`) {
+		t.Errorf("arguments should start with double-quote character (JSON string encoding), got: %s", argsStr)
+	}
+	// Parse as JSON string to get inner JSON object
+	var innerStr string
+	if err := json.Unmarshal(tc.Function.Arguments, &innerStr); err != nil {
+		t.Fatalf("arguments is not a valid JSON string: %v (raw: %s)", err, argsStr)
+	}
+	// Inner string must be valid JSON object
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(innerStr), &obj); err != nil {
+		t.Fatalf("inner arguments is not valid JSON: %v (inner: %s)", err, innerStr)
+	}
+	if obj["city"] != "Paris" {
+		t.Errorf("unexpected city value: %v", obj["city"])
+	}
+}

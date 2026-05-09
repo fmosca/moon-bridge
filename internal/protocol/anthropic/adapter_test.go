@@ -591,3 +591,86 @@ func TestFromCoreRequest_TemperatureAndTopP(t *testing.T) {
 		t.Errorf("TopP = %v, want 0.9", msgReq.TopP)
 	}
 }
+
+// ============================================================================
+// Regression tests for bug fixes
+// ============================================================================
+
+func TestFromCoreRequest_MergesConsecutiveToolResultMessages(t *testing.T) {
+	adapter := newTestAdapter()
+
+	req := &format.CoreRequest{
+		Model: "claude-sonnet-4",
+		Messages: []format.CoreMessage{
+			{
+				Role: "assistant",
+				Content: []format.CoreContentBlock{
+					{
+						Type:      "tool_use",
+						ToolUseID: "call_1",
+						ToolName:  "get_weather",
+						ToolInput: json.RawMessage(`{"city":"Paris"}`),
+					},
+				},
+			},
+			{
+				Role: "user",
+				Content: []format.CoreContentBlock{
+					{
+						Type:             "tool_result",
+						ToolUseID:        "call_1",
+						ToolResultContent: []format.CoreContentBlock{
+							{Type: "text", Text: "Sunny, 25°C"},
+						},
+					},
+				},
+			},
+			{
+				Role: "tool",
+				Content: []format.CoreContentBlock{
+					{
+						Type:             "tool_result",
+						ToolUseID:        "call_2",
+						ToolResultContent: []format.CoreContentBlock{
+							{Type: "text", Text: "Windy, 15°C"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result, err := adapter.FromCoreRequest(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msgReq, ok := result.(*anthropic.MessageRequest)
+	if !ok {
+		t.Fatalf("expected *MessageRequest, got %T", result)
+	}
+
+	// We should have: assistant + user (merged from 2 tool_result messages)
+	if len(msgReq.Messages) != 2 {
+		t.Fatalf("expected 2 messages (assistant + merged user), got %d", len(msgReq.Messages))
+	}
+
+	// First message should be assistant with tool_use
+	if msgReq.Messages[0].Role != "assistant" {
+		t.Errorf("messages[0].Role = %q, want assistant", msgReq.Messages[0].Role)
+	}
+
+	// Second message should be user with 2 tool_result blocks (merged)
+	merged := msgReq.Messages[1]
+	if merged.Role != "user" {
+		t.Errorf("merged message role = %q, want user", merged.Role)
+	}
+	if len(merged.Content) != 2 {
+		t.Fatalf("merged user message has %d content blocks, want 2", len(merged.Content))
+	}
+	for i, block := range merged.Content {
+		if block.Type != "tool_result" {
+			t.Errorf("merged.Content[%d].Type = %q, want tool_result", i, block.Type)
+		}
+	}
+}

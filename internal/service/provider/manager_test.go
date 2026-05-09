@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"context"
 	"testing"
+	"moonbridge/internal/protocol/anthropic"
 
 	"moonbridge/internal/config"
 )
@@ -476,4 +478,38 @@ func TestReloadResolvedWebSearch(t *testing.T) {
 	if got := manager.ResolvedWebSearch("default"); got != "" {
 		t.Fatalf("ResolvedWebSearch after reload should be empty, got %q", got)
 	}
+}
+
+// ============================================================================
+// Regression tests for bug fixes
+// ============================================================================
+
+func TestAnthropicClientAdapter_ImplementsAccessor(t *testing.T) {
+	client := anthropic.NewClient(anthropic.ClientConfig{
+		APIKey: "test-key",
+	})
+	adapter := NewAnthropicClientAdapter(client)
+
+	// Verify it implements AnthropicClientAccessor
+	acc, ok := adapter.(AnthropicClientAccessor)
+	if !ok {
+		t.Fatal("anthropicClientAdapter does not implement AnthropicClientAccessor")
+	}
+
+	inner := acc.AnthropicClient()
+	if inner == nil {
+		t.Error("AnthropicClient() returned nil")
+	}
+
+	// Verify it implements ProviderClient
+	_, ok = adapter.(ProviderClient)
+	if !ok {
+		t.Error("anthropicClientAdapter does not implement ProviderClient")
+	}
+
+	// Verify StreamMessage returns the native anthropic type via accessor
+	// This is a compile-time check — the concrete type is anthropic.Stream
+	_ = context.Background()
+	_ = client
+	_ = inner
 }

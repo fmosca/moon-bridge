@@ -241,11 +241,24 @@ func (a *AnthropicProviderAdapter) FromCoreRequest(ctx context.Context, req *for
 	}
 
 	// Messages
+	// Messages — merge consecutive user messages that contain tool_result blocks
+	// into a single user message. Anthropic requires all tool_result blocks from
+	// one assistant turn to be in one user message immediately after tool_use.
 	for _, msg := range req.Messages {
-		anthropicReq.Messages = append(anthropicReq.Messages, Message{
+		anthroMsg := Message{
 			Role:    a.mapRole(msg.Role),
 			Content: a.toContentBlocks(msg.Content),
-		})
+		}
+		last := len(anthropicReq.Messages) - 1
+		if last >= 0 && anthroMsg.Role == "user" &&
+			anthropicReq.Messages[last].Role == "user" &&
+			isToolResultOnly(anthroMsg.Content) &&
+			isToolResultOnly(anthropicReq.Messages[last].Content) {
+			anthropicReq.Messages[last].Content = append(
+				anthropicReq.Messages[last].Content, anthroMsg.Content...)
+		} else {
+			anthropicReq.Messages = append(anthropicReq.Messages, anthroMsg)
+		}
 	}
 
 	// Tools
@@ -715,6 +728,20 @@ func (a *AnthropicProviderAdapter) mapRole(role string) string {
 	default:
 		return role
 	}
+}
+
+// isToolResultOnly checks if all content blocks in a message are tool_result type.
+// Used to identify consecutive user-tool-result messages that should be merged.
+func isToolResultOnly(blocks []ContentBlock) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, b := range blocks {
+		if b.Type != "tool_result" {
+			return false
+		}
+	}
+	return true
 }
 
 // extractCacheControl reads cache_control from a CoreContentBlock.Extensions map.
