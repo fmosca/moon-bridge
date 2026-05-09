@@ -83,12 +83,16 @@ func statsUsageFromAnthropic(usage format.CoreUsage, inputIncludesCache bool) st
 }
 
 func billingUsageFromAnthropic(usage format.CoreUsage) stats.BillingUsage {
+	freshInput := usage.InputTokens - usage.CachedInputTokens
+	if freshInput < 0 {
+		freshInput = 0
+	}
 	return stats.BillingUsage{
-		FreshInputTokens:         usage.InputTokens,
+		FreshInputTokens:         freshInput,
 		OutputTokens:             usage.OutputTokens,
 		CacheCreationInputTokens: 0,
 		CacheReadInputTokens:     usage.CachedInputTokens,
-		ProviderInputTokens:      usage.InputTokens + usage.CachedInputTokens,
+		ProviderInputTokens:      usage.InputTokens,
 	}
 }
 

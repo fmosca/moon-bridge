@@ -564,9 +564,11 @@ func (s *streamConverterState) convertEvent(events chan<- format.CoreStreamEvent
 
 	case "message_delta":
 		if ev.Usage != nil {
+			totalInput := ev.Usage.InputTokens + ev.Usage.CacheReadInputTokens
 			s.finalUsage = &format.CoreUsage{
-				// Anthropic input_tokens already includes cache reads.
-				InputTokens:       ev.Usage.InputTokens,
+				// Core format InputTokens = total input (fresh + cache), matching OpenAI API semantics.
+				// Anthropic input_tokens is fresh-only, so we add CacheReadInputTokens.
+				InputTokens:       totalInput,
 				OutputTokens:      ev.Usage.OutputTokens,
 				CachedInputTokens: ev.Usage.CacheReadInputTokens,
 			}
@@ -853,10 +855,11 @@ func (a *AnthropicProviderAdapter) toCoreUsage(u Usage) format.CoreUsage {
 	if cached == 0 {
 		cached = u.CacheCreationInputTokens
 	}
+	totalInput := u.InputTokens + cached
 	return format.CoreUsage{
-		InputTokens:       u.InputTokens,
+		InputTokens:       totalInput,                // Total input (fresh + cache) matching OpenAI API semantics
 		OutputTokens:      u.OutputTokens,
-		TotalTokens:       u.InputTokens + u.OutputTokens,
+		TotalTokens:       totalInput + u.OutputTokens,
 		CachedInputTokens: cached,
 	}
 }
