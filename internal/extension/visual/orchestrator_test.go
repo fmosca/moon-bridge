@@ -348,3 +348,85 @@ func TestStripImagesFromAnthropic_MixedContent(t *testing.T) {
 		t.Fatalf("expected 2 placeholder blocks, got %d", placeholderCount)
 	}
 }
+
+func TestStripImagesFromAnthropic_MultiTurnDoesNotRestoreImages(t *testing.T) {
+	// Simulate a multi-turn conversation constructed manually (as the orchestrator would):
+	// Turn 1: user with images → assistant with tool_use → user with tool_result
+	// Turn 2: user (continues) with more text
+	// After stripping once, image blocks must not reappear in any turn.
+
+	req := anthropic.MessageRequest{
+		Model: "test-model",
+		Messages: []anthropic.Message{
+			// Turn 1: user sends image
+			{
+				Role: "user",
+				Content: []anthropic.ContentBlock{
+					{Type: "text", Text: "第一轮问题"},
+					{Type: "image", Source: &anthropic.ImageSource{Type: "base64", MediaType: "image/png", Data: "b64_data"}},
+				},
+			},
+			// Turn 1: assistant calls tool
+			{
+				Role: "assistant",
+				Content: []anthropic.ContentBlock{
+					{Type: "tool_use", ID: "call_1", Name: ToolVisualBrief},
+				},
+			},
+			// Turn 1: user returns tool_result (no images here, this is text)
+			{
+				Role: "user",
+				Content: []anthropic.ContentBlock{
+					{Type: "tool_result", ToolUseID: "call_1", Content: "visual brief result"},
+				},
+			},
+			// Turn 2: user asks follow-up
+			{
+				Role: "user",
+				Content: []anthropic.ContentBlock{
+					{Type: "text", Text: "第二轮追问"},
+				},
+			},
+		},
+	}
+
+	stripped, modified := StripImagesFromAnthropic(req)
+
+	if !modified {
+		t.Fatal("StripImagesFromAnthropic: modified = false, want true (had image)")
+	}
+
+	// Verify: ALL messages have NO image blocks
+	for i, msg := range stripped.Messages {
+		for _, block := range msg.Content {
+			if block.Type == "image" {
+				t.Fatalf("message %d (role=%s): image block still present after stripping", i, msg.Role)
+			}
+		}
+	}
+
+	// Verify: the image was replaced with a placeholder in the first user message
+	firstTexts := 0
+	for _, block := range stripped.Messages[0].Content {
+		if block.Type == "text" {
+			firstTexts++
+		}
+	}
+	// Original: 1 text + 1 image → After strip: 2 texts (original + placeholder)
+	if firstTexts != 2 {
+		t.Fatalf("first message content blocks = %d, want 2 (1 original text + 1 placeholder)",
+			firstTexts)
+	}
+
+	// Verify: other messages are completely unchanged
+	if len(stripped.Messages[1].Content) != 1 || stripped.Messages[1].Content[0].Type != "tool_use" {
+		t.Fatal("assistant message was modified")
+	}
+	if len(stripped.Messages[2].Content) != 1 || stripped.Messages[2].Content[0].Type != "tool_result" {
+		t.Fatal("tool_result message was modified")
+	}
+	if stripped.Messages[3].Content[0].Text != "第二轮追问" {
+		t.Fatal("second user message was modified")
+	}
+}
+

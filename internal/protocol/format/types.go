@@ -299,3 +299,7 @@ type CoreStreamEvent struct {
 	// Protocol-specific extensions
 	Extensions map[string]any `json:"extensions,omitempty"`
 }
+
+func isBase64Char(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+' || c == '/'
+}

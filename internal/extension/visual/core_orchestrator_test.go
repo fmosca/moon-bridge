@@ -552,3 +552,118 @@ func TestPrepareCoreRequestForVisual_MixedContent(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// Multi-turn visual orchestration test (regression: strip across rounds)
+// ============================================================================
+
+func TestCoreOrchestrator_ImageStrippedAcrossMultipleTurns(t *testing.T) {
+	// Simulate a multi-turn conversation where images are in the FIRST user message.
+	// After each visual tool round, the orchestrator appends assistant + tool_result
+	// messages. On subsequent rounds, the upstream should NEVER see an image block.
+
+	upstream := &fakeCoreUpstream{
+		responses: []*format.CoreResponse{
+			// Turn 1: upstream calls VisualBrief
+			{
+				ID: "turn1", Status: "completed", StopReason: "tool_use",
+				Messages: []format.CoreMessage{{
+					Role: "assistant",
+					Content: []format.CoreContentBlock{{
+						Type: "tool_use", ToolUseID: "toolu_1", ToolName: ToolVisualBrief,
+						ToolInput: json.RawMessage(`{"image_refs":["Image #1"],"context":"describe"}`),
+					}},
+				}},
+			},
+			// Turn 2: upstream calls VisualQA (follow-up question about the same image)
+			{
+				ID: "turn2", Status: "completed", StopReason: "tool_use",
+				Messages: []format.CoreMessage{{
+					Role: "assistant",
+					Content: []format.CoreContentBlock{{
+						Type: "tool_use", ToolUseID: "toolu_2", ToolName: ToolVisualQA,
+						ToolInput: json.RawMessage(`{"question":"color?","image_refs":["Image #1"]}`),
+					}},
+				}},
+			},
+			// Turn 3: final text response
+			{
+				ID: "turn3", Status: "completed", StopReason: "end_turn",
+				Messages: []format.CoreMessage{{
+					Role: "assistant",
+					Content: []format.CoreContentBlock{{Type: "text", Text: "final answer"}},
+				}},
+			},
+		},
+	}
+	vision := &fakeCoreVisionClient{text: "visual analysis result"}
+	orchestrator := NewCoreOrchestrator(CoreOrchestratorConfig{
+		Upstream:  upstream,
+		Client:    vision,
+		MaxRounds: 5,
+	})
+
+	// First request with 2 images attached
+	_, err := orchestrator.CreateCore(context.Background(), &format.CoreRequest{
+		Model: "test-model",
+		Messages: []format.CoreMessage{{
+			Role: "user",
+			Content: []format.CoreContentBlock{
+				{Type: "text", Text: "描述这些图片"},
+				{Type: "image", ImageData: "b64_image_1", MediaType: "image/png"},
+				{Type: "image", ImageData: "b64_image_2", MediaType: "image/jpeg"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateCore() error = %v", err)
+	}
+
+	// Verify: ALL upstream requests (3 turns) received NO image blocks
+	for i, req := range upstream.requests {
+		for _, msg := range req.Messages {
+			for _, block := range msg.Content {
+				if block.Type == "image" {
+					t.Fatalf("turn %d: upstream received image block! Messages=%+v", i+1, req.Messages)
+				}
+			}
+		}
+	}
+
+	// Verify: all 3 turns were executed
+	if len(upstream.requests) != 3 {
+		t.Fatalf("upstream requests = %d, want 3", len(upstream.requests))
+	}
+
+	// Verify: vision client received 2 requests (VisualBrief + VisualQA)
+	if len(vision.requests) != 2 {
+		t.Fatalf("vision requests = %d, want 2", len(vision.requests))
+	}
+
+	// Verify: both vision requests reference Image #1 (model chose to use only one)
+	for i, req := range vision.requests {
+		if len(req.Images) != 1 {
+			t.Fatalf("vision request %d: images = %d, want 1", i, len(req.Images))
+		}
+		if req.Images[0].Data != "b64_image_1" {
+			t.Fatalf("vision request %d: wrong image data: %+v", i, req.Images)
+		}
+	}
+
+	// Verify: first upstream request has text placeholders instead of images
+	firstMsg := upstream.requests[0].Messages[0]
+	placeholderCount := 0
+	for _, block := range firstMsg.Content {
+		if block.Type == "text" && (block.Text == "[Image #1 is available..." ||
+			block.Text == "[Image #2 is available..." ||
+			block.Text == "[Image #1 is available to Visual Brief and Visual QA. Use image_refs [\"Image #1\"] or omit image fields to analyze attached images.]" ||
+			block.Text == "[Image #2 is available to Visual Brief and Visual QA. Use image_refs [\"Image #2\"] or omit image fields to analyze attached images.]") {
+			placeholderCount++
+		}
+	}
+	if placeholderCount != 2 {
+		t.Fatalf("expected 2 text placeholders in first upstream request, got %d. Content=%+v",
+			placeholderCount, firstMsg.Content)
+	}
+}
+

@@ -214,6 +214,12 @@ func (a *AnthropicProviderAdapter) FromCoreRequest(ctx context.Context, req *for
 	// Step 1: Allow plugins to mutate the CoreRequest before conversion.
 	a.hooks.MutateCoreRequest(ctx, req)
 
+	// Strip base64 image data from all text content to prevent token waste.
+	format.StripContentBlocks(req.System)
+	for i := range req.Messages {
+		format.StripContentBlocks(req.Messages[i].Content)
+	}
+
 	// Ensure cache manager is available before proceeding.
 	if a.cacheMgr == nil {
 		return nil, fmt.Errorf("anthropic adapter: cache manager is nil")

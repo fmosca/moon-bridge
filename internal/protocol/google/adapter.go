@@ -92,6 +92,12 @@ func (a *GeminiProviderAdapter) FromCoreRequest(ctx context.Context, req *format
 	// Step 1: Allow plugins to mutate the CoreRequest before conversion.
 	a.hooks.MutateCoreRequest(ctx, req)
 
+	// Strip base64 image data from all text content to prevent token waste.
+	format.StripContentBlocks(req.System)
+	for i := range req.Messages {
+		format.StripContentBlocks(req.Messages[i].Content)
+	}
+
 	// Step 2: Build the Gemini request.
 	geminiReq := &GenerateContentRequest{
 		Contents: make([]Content, 0, len(req.Messages)),

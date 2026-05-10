@@ -8,7 +8,11 @@
 // packages. Only Go standard library + encoding/json.
 package format
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // ============================================================================
 // Content Block
@@ -298,4 +302,103 @@ type CoreStreamEvent struct {
 
 	// Protocol-specific extensions
 	Extensions map[string]any `json:"extensions,omitempty"`
+}
+
+
+// StripImageData scans string content for base64-encoded image data (data:image URLs
+// and raw PNG/JPEG base64 blobs) and replaces them with short placeholders.
+// This prevents large image payloads from wasting tokens when sent to text-only models
+// via tool_result blocks, system prompts, or message text.
+func StripImageData(s string) string {
+	if len(s) < 100 {
+		return s
+	}
+	var result strings.Builder
+	result.Grow(len(s))
+	pos := 0
+	for pos < len(s) {
+		marker := "data:image/"
+		idx := strings.Index(s[pos:], marker)
+		if idx >= 0 {
+			result.WriteString(s[pos : pos+idx])
+			start := pos + idx
+			commaIdx := strings.Index(s[start:], ";base64,")
+			if commaIdx >= 0 {
+				dataStart := start + commaIdx + 8
+				end := dataStart
+				for end < len(s) && (isBase64Char(s[end]) || s[end] == '=') {
+					end++
+				}
+				if end > dataStart + 500 {
+					imgType := s[start+len(marker) : start+commaIdx]
+					result.WriteString(fmt.Sprintf("[Image data: %s, %d bytes]", imgType, end-dataStart))
+					pos = end
+					continue
+				}
+				result.WriteString(s[start:end])
+				pos = end
+				continue
+			}
+			result.WriteString(s[start : start+len(marker)])
+			pos = start + len(marker)
+			continue
+		}
+		marker = "iVBORw0KGgo"
+		idx = strings.Index(s[pos:], marker)
+		if idx >= 0 {
+			result.WriteString(s[pos : pos+idx])
+			start := pos + idx
+			end := start
+			for end < len(s) && (isBase64Char(s[end]) || s[end] == '=') {
+				end++
+			}
+			if end > start + 500 {
+				result.WriteString(fmt.Sprintf("[Image data: png, %d bytes]", end-start))
+				pos = end
+				continue
+			}
+			result.WriteString(s[start:end])
+			pos = end
+			continue
+		}
+		marker = "/9j/"
+		idx = strings.Index(s[pos:], marker)
+		if idx >= 0 {
+			result.WriteString(s[pos : pos+idx])
+			start := pos + idx
+			end := start
+			for end < len(s) && (isBase64Char(s[end]) || s[end] == '=') {
+				end++
+			}
+			if end > start + 500 {
+				result.WriteString(fmt.Sprintf("[Image data: jpeg, %d bytes]", end-start))
+				pos = end
+				continue
+			}
+			result.WriteString(s[start:end])
+			pos = end
+			continue
+		}
+		result.WriteString(s[pos:])
+		break
+	}
+	return result.String()
+}
+
+// StripContentBlocks recursively replaces base64 image data in all text content
+// within a slice of ContentBlock. Used to prevent image base64 from leaking to
+// text-only models via tool_result, system, or message text.
+func StripContentBlocks(blocks []CoreContentBlock) {
+	for i := range blocks {
+		if blocks[i].Type == "text" || blocks[i].Type == "" {
+			blocks[i].Text = StripImageData(blocks[i].Text)
+		}
+		if blocks[i].Type == "tool_result" && len(blocks[i].ToolResultContent) > 0 {
+			StripContentBlocks(blocks[i].ToolResultContent)
+		}
+	}
+}
+
+func isBase64Char(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+' || c == '/'
 }
