@@ -81,18 +81,32 @@ type anthropicClientAdapter struct {
 	client *anthropic.Client
 }
 
+func normalizeAnthropicMessageRequest(req any) (anthropic.MessageRequest, error) {
+	switch v := req.(type) {
+	case anthropic.MessageRequest:
+		return v, nil
+	case *anthropic.MessageRequest:
+		if v == nil {
+			return anthropic.MessageRequest{}, fmt.Errorf("expected anthropic.MessageRequest, got nil *anthropic.MessageRequest")
+		}
+		return *v, nil
+	default:
+		return anthropic.MessageRequest{}, fmt.Errorf("expected anthropic.MessageRequest, got %T", req)
+	}
+}
+
 func (a *anthropicClientAdapter) CreateMessage(ctx context.Context, req any) (any, error) {
-	msgReq, ok := req.(anthropic.MessageRequest)
-	if !ok {
-		return nil, fmt.Errorf("expected anthropic.MessageRequest, got %T", req)
+	msgReq, err := normalizeAnthropicMessageRequest(req)
+	if err != nil {
+		return nil, err
 	}
 	return a.client.CreateMessage(ctx, msgReq)
 }
 
 func (a *anthropicClientAdapter) StreamMessage(ctx context.Context, req any) (<-chan any, error) {
-	msgReq, ok := req.(anthropic.MessageRequest)
-	if !ok {
-		return nil, fmt.Errorf("expected anthropic.MessageRequest, got %T", req)
+	msgReq, err := normalizeAnthropicMessageRequest(req)
+	if err != nil {
+		return nil, err
 	}
 	stream, err := a.client.StreamMessage(ctx, msgReq)
 	if err != nil {

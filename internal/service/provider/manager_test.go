@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"moonbridge/internal/protocol/anthropic"
 
@@ -512,4 +515,108 @@ func TestAnthropicClientAdapter_ImplementsAccessor(t *testing.T) {
 	_ = context.Background()
 	_ = client
 	_ = inner
+}
+
+func TestAnthropicClientAdapter_CreateMessageAcceptsPointerRequest(t *testing.T) {
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"id": "msg_ptr_create",
+			"type": "message",
+			"role": "assistant",
+			"model": "kimi-test",
+			"content": [{"type": "text", "text": "ok"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 3, "output_tokens": 2}
+		}`))
+	}))
+	defer mockSrv.Close()
+
+	adapter := &anthropicClientAdapter{client: anthropic.NewClient(anthropic.ClientConfig{
+		BaseURL: mockSrv.URL,
+		APIKey:  "test-key",
+		Client:  mockSrv.Client(),
+	})}
+
+	resp, err := adapter.CreateMessage(context.Background(), &anthropic.MessageRequest{
+		Model:     "kimi-test",
+		MaxTokens: 16,
+		Messages: []anthropic.Message{{
+			Role: "user",
+			Content: []anthropic.ContentBlock{{
+				Type: "text",
+				Text: "hello",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage() error = %v", err)
+	}
+
+	msgResp, ok := resp.(anthropic.MessageResponse)
+	if !ok {
+		t.Fatalf("CreateMessage() type = %T, want anthropic.MessageResponse", resp)
+	}
+	if msgResp.ID != "msg_ptr_create" {
+		t.Fatalf("CreateMessage() response ID = %q", msgResp.ID)
+	}
+}
+
+func TestAnthropicClientAdapter_StreamMessageAcceptsPointerRequest(t *testing.T) {
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Join([]string{
+			"event: message_start",
+			"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ptr_stream\",\"type\":\"message\",\"role\":\"assistant\"}}",
+			"",
+		}, "\n")))
+	}))
+	defer mockSrv.Close()
+
+	adapter := &anthropicClientAdapter{client: anthropic.NewClient(anthropic.ClientConfig{
+		BaseURL: mockSrv.URL,
+		APIKey:  "test-key",
+		Client:  mockSrv.Client(),
+	})}
+
+	stream, err := adapter.StreamMessage(context.Background(), &anthropic.MessageRequest{
+		Model:     "kimi-test",
+		MaxTokens: 16,
+		Messages: []anthropic.Message{{
+			Role: "user",
+			Content: []anthropic.ContentBlock{{
+				Type: "text",
+				Text: "hello",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("StreamMessage() error = %v", err)
+	}
+
+	first, ok := <-stream
+	if !ok {
+		t.Fatal("StreamMessage() returned closed channel")
+	}
+	event, ok := first.(anthropic.StreamEvent)
+	if !ok {
+		t.Fatalf("stream event type = %T, want anthropic.StreamEvent", first)
+	}
+	if event.Type != "message_start" {
+		t.Fatalf("stream event type = %q, want message_start", event.Type)
+	}
+	if event.Message == nil || event.Message.ID != "msg_ptr_stream" {
+		t.Fatalf("stream event message = %+v", event.Message)
+	}
 }
