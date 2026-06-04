@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -162,6 +163,33 @@ func New(cfg Config) *Server {
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	log := slog.Default().With("method", request.Method, "path", request.URL.Path)
+	log.Info("request")
+
+	// CORS: allow browser-based clients (Chatwise, Continue, etc.) to reach
+	// moon-bridge from any origin.
+	writer.Header().Set("Access-Control-Allow-Origin", "*")
+	writer.Header().Set("Access-Control-Allow-Methods", "*")
+	writer.Header().Set("Access-Control-Allow-Headers", "*")
+	writer.Header().Set("Access-Control-Expose-Headers", "*")
+
+	if request.Method == http.MethodOptions {
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Per-model detail endpoint: GET /v1/models/{id}
+	if request.Method == http.MethodGet {
+		if modelID, found := strings.CutPrefix(request.URL.Path, "/v1/models/"); found {
+			s.handleModelDetail(writer, request, modelID)
+			return
+		}
+		if modelID, found := strings.CutPrefix(request.URL.Path, "/models/"); found {
+			s.handleModelDetail(writer, request, modelID)
+			return
+		}
+	}
+
 	if token := s.currentConfig().AuthToken; token != "" {
 		if !checkAuth(request, token) {
 			writer.Header().Set("Content-Type", "application/json")
@@ -177,6 +205,19 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	s.mux.ServeHTTP(writer, request)
 }
 
+// modelEntry is returned by the /v1/models endpoint in OpenAI-compatible format.
+type modelEntry struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+type modelsResponse struct {
+	Object string       `json:"object"`
+	Data   []modelEntry `json:"data"`
+}
+
 func (s *Server) handleModels(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		writeOpenAIError(writer, http.StatusMethodNotAllowed, openai.ErrorResponse{Error: openai.ErrorObject{
@@ -186,20 +227,18 @@ func (s *Server) handleModels(writer http.ResponseWriter, request *http.Request)
 		}})
 		return
 	}
-	models := s.listModels()
-	resp := struct {
-		Models []map[string]any `json:"models"`
-	}{
-		Models: models,
+
+	resp := modelsResponse{
+		Object: "list",
+		Data:   s.listModels(),
 	}
 	writer.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(writer).Encode(resp)
 }
 
-func (s *Server) listModels() []map[string]any {
-	var models []map[string]any
+func (s *Server) listModels() []modelEntry {
+	var models []modelEntry
 
-	// Get provider data from runtime (full config snapshot).
 	var providerDefs map[string]config.ProviderDef
 	var routes map[string]config.RouteEntry
 	if s.runtime != nil {
@@ -210,31 +249,41 @@ func (s *Server) listModels() []map[string]any {
 
 	for key, def := range providerDefs {
 		for modelName := range def.Models {
-			models = append(models, map[string]any{
-				"slug":     key + "/" + modelName,
-				"name":     modelName,
-				"provider": key,
+			models = append(models, modelEntry{
+				ID:      key + "/" + modelName,
+				Object:  "model",
+				Created: 1700000000,
+				OwnedBy: key,
 			})
 		}
 	}
 
 	for alias, route := range routes {
-		displayName := route.DisplayName
-		if displayName == "" {
-			// When no explicit display_name is configured for this route,
-			// derive from the alias slug (e.g. "gpt-5.4" -> "GPT 5.4").
-			// This avoids inheriting the underlying model's DisplayName,
-			// which would cause duplicates when multiple routes point to the same model.
-			displayName = slugDisplayName(alias)
-		}
-		models = append(models, map[string]any{
-			"slug":     alias,
-			"name":     displayName,
-			"provider": route.Provider,
-			"model":    route.Model,
+		models = append(models, modelEntry{
+			ID:      alias,
+			Object:  "model",
+			Created: 1700000000,
+			OwnedBy: route.Provider,
 		})
 	}
 	return models
+}
+
+// handleModelDetail returns details for a single model (GET /v1/models/{id}).
+// Many OpenAI-compatible clients fetch per-model details during discovery.
+func (s *Server) handleModelDetail(writer http.ResponseWriter, _ *http.Request, modelID string) {
+	for _, m := range s.listModels() {
+		if m.ID == modelID {
+			writer.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(writer).Encode(m)
+			return
+		}
+	}
+	writeOpenAIError(writer, http.StatusNotFound, openai.ErrorResponse{Error: openai.ErrorObject{
+		Message: fmt.Sprintf("model %q not found", modelID),
+		Type:    "invalid_request_error",
+		Code:    "model_not_found",
+	}})
 }
 
 func (s *Server) currentConfig() config.ServerConfig {
@@ -302,22 +351,6 @@ func computeCostWithProviderPricing(pm *provider.ProviderManager, stats *stats.S
 		}
 	}
 	return stats.ComputeBillingCost(requestModel, usage)
-}
-
-// slugDisplayName converts a route alias slug to a human-readable display name.
-// e.g. "gpt-5.4" -> "GPT 5.4", "codex-auto-review" -> "Codex Auto Review"
-func slugDisplayName(slug string) string {
-	slug = strings.ReplaceAll(slug, "-", " ")
-	words := strings.Fields(slug)
-	for i, w := range words {
-		lower := strings.ToLower(w)
-		if len(lower) >= 3 && lower[:3] == "gpt" {
-			words[i] = "GPT" + w[3:]
-			continue
-		}
-		words[i] = strings.ToUpper(w[:1]) + strings.ToLower(w[1:])
-	}
-	return strings.Join(words, " ")
 }
 
 func checkAuth(r *http.Request, expectedToken string) bool {
