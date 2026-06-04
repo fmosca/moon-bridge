@@ -10,6 +10,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -123,9 +124,20 @@ func (server *Server) dispatchChatNonStream(
 	chatClient format.ClientAdapter,
 ) {
 	log := slog.Default().With("model", chatReq.Model, "path", "chat-nonstream")
+	ctx := r.Context()
 	requestStart := time.Now()
 
-	// Use an internal response recorder to capture the OpenAI response.
+	preferred, _ := route.Preferred()
+
+	// Fast path: when upstream speaks openai-chat, dispatch directly
+	// through the Chat protocol to preserve reasoning_content and avoid
+	// the lossy Core → OpenAI Response → ChatResponse round-trip.
+	if preferred.Protocol == config.ProtocolOpenAIChat {
+		server.dispatchChatNonStreamDirect(w, r, chatReq, route, preferred, ctx, requestStart)
+		return
+	}
+
+	// Cross-protocol path: Chat → handleWithAdapters → OpenAI Response → Chat.
 	rec := &chatResponseRecorder{header: make(http.Header)}
 
 	// Dispatch through the existing adapter path.
@@ -157,8 +169,8 @@ func (server *Server) dispatchChatNonStream(
 	chatResp.Model = chatReq.Model
 	chat.WriteChatNonStreamResponse(w, chatResp)
 
-	// Usage tracking.
-	preferred, _ := route.Preferred()
+	// Usage tracking (reuse preferred from above, already declared).
+	preferred, _ = route.Preferred()
 	if server.pluginRegistry != nil {
 		usage := zeroUsage(config.ProtocolOpenAIChat, "none")
 		if chatResp.Usage != nil {
@@ -173,6 +185,111 @@ func (server *Server) dispatchChatNonStream(
 	}
 
 	log.Info("chat completions completed", "model", chatReq.Model, "provider", preferred.ProviderKey)
+}
+
+// dispatchChatNonStreamDirect dispatches a Chat Completions request directly
+// through the Chat protocol adapter chain, bypassing the lossy Core → OpenAI
+// Response → ChatResponse round-trip. Used when upstream speaks openai-chat
+// to preserve reasoning_content and other Chat-specific fields.
+func (server *Server) dispatchChatNonStreamDirect(
+	w http.ResponseWriter,
+	r *http.Request,
+	chatReq chat.ChatRequest,
+	route *provider.ResolvedRoute,
+	preferred provider.ProviderCandidate,
+	ctx context.Context,
+	requestStart time.Time,
+) {
+	log := slog.Default().With("model", chatReq.Model, "path", "chat-direct")
+
+	// 1. Inbound ChatRequest → CoreRequest.
+	chatClientAdapter, ok := server.adapterRegistry.GetClient(config.ProtocolOpenAIChat)
+	if !ok {
+		writeChatError(w, http.StatusInternalServerError, "no chat client adapter", "server_error", "adapter_fallback")
+		return
+	}
+	coreReq, err := chatClientAdapter.ToCoreRequest(ctx, &chatReq)
+	if err != nil {
+		log.Error("ToCoreRequest failed", "error", err)
+		writeChatError(w, http.StatusInternalServerError, "request conversion failed", "server_error", "conversion_error")
+		return
+	}
+	coreReq.Model = preferred.UpstreamModel
+
+	// 2. CoreRequest → upstream ChatRequest via provider adapter.
+	chatProviderAdapter, ok := server.adapterRegistry.GetProvider(config.ProtocolOpenAIChat)
+	if !ok {
+		writeChatError(w, http.StatusInternalServerError, "no chat provider adapter", "server_error", "adapter_fallback")
+		return
+	}
+	upstreamAny, err := chatProviderAdapter.FromCoreRequest(ctx, coreReq)
+	if err != nil {
+		log.Error("FromCoreRequest failed", "error", err)
+		writeChatError(w, http.StatusInternalServerError, "upstream conversion failed", "server_error", "conversion_error")
+		return
+	}
+	upstreamReq := upstreamAny.(*chat.ChatRequest)
+
+	// 3. Call upstream Chat Completions API.
+	chatClientRaw := server.activeChatClient(preferred.ProviderKey)
+	if chatClientRaw == nil {
+		log.Error("no chat client for provider", "provider", preferred.ProviderKey)
+		writeChatError(w, http.StatusBadGateway, "no chat client for provider", "server_error", "provider_error")
+		return
+	}
+	chatUpstreamClient, ok := chatClientRaw.(*chat.Client)
+	if !ok {
+		log.Error("invalid chat client type", "provider", preferred.ProviderKey)
+		writeChatError(w, http.StatusInternalServerError, "invalid chat client", "server_error", "internal_error")
+		return
+	}
+
+	// Prepend cached reasoning for DeepSeek thinking chain replay.
+	if server.pluginRegistry != nil {
+		sess := server.sessionForRequest(r)
+		if sess != nil {
+			prependCachedReasoningForChat(upstreamReq, sess)
+		}
+	}
+
+	chatResp, err := chatUpstreamClient.CreateChat(ctx, upstreamReq)
+	if err != nil {
+		log.Error("CreateChat failed", "error", err)
+		writeChatError(w, http.StatusBadGateway, fmt.Sprintf("upstream error: %v", err), "server_error", "provider_error")
+		return
+	}
+
+	// Cache reasoning from Chat response for DeepSeek thinking replay.
+	if server.pluginRegistry != nil {
+		sess := server.sessionForRequest(r)
+		if sess != nil {
+			for _, choice := range chatResp.Choices {
+				if choice.Message.ReasoningContent != "" && len(choice.Message.ToolCalls) > 0 {
+					var tcIDs []string
+					for _, tc := range choice.Message.ToolCalls {
+						tcIDs = append(tcIDs, tc.ID)
+					}
+					cacheReasoningForChat(sess, tcIDs, choice.Message.ReasoningContent)
+				}
+			}
+		}
+	}
+
+	// 4. Return ChatResponse directly — no Core round-trip, preserves reasoning_content.
+	chatResp.Model = chatReq.Model
+	chat.WriteChatNonStreamResponse(w, chatResp)
+
+	// Usage tracking.
+	if server.pluginRegistry != nil {
+		usage := zeroUsage(config.ProtocolOpenAIChat, "none")
+		if chatResp.Usage != nil {
+			usage.NormalizedInputTokens = chatResp.Usage.PromptTokens
+			usage.NormalizedOutputTokens = chatResp.Usage.CompletionTokens
+		}
+		server.onRequestCompleted(chatReq.Model, preferred.UpstreamModel, preferred.ProviderKey, requestStart, usage, 0, "success", "")
+	}
+
+	log.Info("chat completions completed (direct)", "model", chatReq.Model, "provider", preferred.ProviderKey)
 }
 
 // dispatchChatStream handles streaming Chat Completions by translating

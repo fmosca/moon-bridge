@@ -38,6 +38,7 @@ FakeHome
 # local runtime config with provider secrets
 config.yml
 config.yaml
+config.*.yml
 /data/
 /trace/
 .env

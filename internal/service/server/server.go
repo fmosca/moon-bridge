@@ -164,6 +164,18 @@ func New(cfg Config) *Server {
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	// CORS: allow browser-based clients (Chatwise, Continue, etc.) to reach
+	// moon-bridge from any origin.
+	writer.Header().Set("Access-Control-Allow-Origin", "*")
+	writer.Header().Set("Access-Control-Allow-Methods", "*")
+	writer.Header().Set("Access-Control-Allow-Headers", "*")
+	writer.Header().Set("Access-Control-Expose-Headers", "*")
+
+	if request.Method == http.MethodOptions {
+		writer.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	if token := s.currentConfig().AuthToken; token != "" {
 		if !checkAuth(request, token) {
 			writer.Header().Set("Content-Type", "application/json")
