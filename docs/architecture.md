@@ -58,7 +58,7 @@ Moon Bridge 是一个 Go 语言编写的 HTTP 代理/协议转换服务器。对
 
 业务编排层，组合基础层和 Protocol 组件：
 
-- `internal/service/server` — HTTP 服务器、路由（`/v1/responses`、`/v1/models`、`/health` 等）、认证
+- `internal/service/server` — HTTP 服务器、路由（`/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/health` 等）、认证
 - `internal/service/server/adapter_dispatch.go` — Adapter 分发路径（switch 协议类型 → 调用对应 Adapter）
 - `internal/service/provider` — Provider 管理器（多 Provider 路由、配置热重载）
 - `internal/service/proxy` — Capture 模式下的透明代理
@@ -93,6 +93,8 @@ Moon Bridge 是一个 Go 语言编写的 HTTP 代理/协议转换服务器。对
 
 ## 请求生命周期数据流（Transform 模式）
 
+### OpenAI Responses 入站
+
 ```
 客户端 (Codex CLI)
     │ POST /v1/responses (OpenAI Responses 格式)
@@ -113,6 +115,23 @@ adapter_dispatch.go (Adapter 分发)
     │
     ▼
 客户端 ←── OpenAI Responses 响应
+```
+
+### OpenAI Chat Completions 入站
+
+```
+客户端 (Chatwise)
+    │ POST /v1/chat/completions (Chat Completions 格式)
+    ▼
+server.handleChatCompletions()
+    │ ChatRequest → CoreRequest → ResponsesRequest
+    │ 认证 / 日志 / 路由解析
+    ▼
+adapter_dispatch.go (同一 Adapter 分发路径)
+    │ OpenAI Responses 响应 → CoreResponse → ChatResponse
+    │
+    ▼
+客户端 ←── Chat Completions 响应 (非流式 / SSE 流式)
 ```
 
 ## 模型路由
