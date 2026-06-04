@@ -123,7 +123,6 @@ func (server *Server) dispatchChatNonStream(
 	chatClient format.ClientAdapter,
 ) {
 	log := slog.Default().With("model", chatReq.Model, "path", "chat-nonstream")
-	ctx := r.Context()
 	requestStart := time.Now()
 
 	// Use an internal response recorder to capture the OpenAI response.
@@ -153,33 +152,8 @@ func (server *Server) dispatchChatNonStream(
 		return
 	}
 
-	// OpenAI Response → CoreResponse → ChatResponse.
-	oaiProvider, ok := server.adapterRegistry.GetProvider(config.ProtocolOpenAIResponse)
-	if !ok {
-		writeChatError(w, http.StatusInternalServerError, "no openai provider adapter", "server_error", "adapter_fallback")
-		return
-	}
-
-	coreResp, err := oaiProvider.ToCoreResponse(ctx, &oaiResp)
-	if err != nil {
-		log.Error("ToCoreResponse failed", "error", err)
-		writeChatError(w, http.StatusInternalServerError, "response conversion error", "server_error", "conversion_error")
-		return
-	}
-
-	chatRespAny, err := chatClient.FromCoreResponse(ctx, coreResp)
-	if err != nil {
-		log.Error("chat FromCoreResponse failed", "error", err)
-		writeChatError(w, http.StatusInternalServerError, "response conversion error", "server_error", "conversion_error")
-		return
-	}
-
-	chatResp, ok := chatRespAny.(*chat.ChatResponse)
-	if !ok {
-		writeChatError(w, http.StatusInternalServerError, "unexpected response type", "server_error", "internal_error")
-		return
-	}
-
+	// OpenAI Response → ChatResponse (direct conversion, no Core round-trip).
+	chatResp := openaiResponseToChatResponse(&oaiResp)
 	chatResp.Model = chatReq.Model
 	chat.WriteChatNonStreamResponse(w, chatResp)
 
@@ -187,13 +161,12 @@ func (server *Server) dispatchChatNonStream(
 	preferred, _ := route.Preferred()
 	if server.pluginRegistry != nil {
 		usage := zeroUsage(config.ProtocolOpenAIChat, "none")
-	if coreResp.Usage.InputTokens > 0 || coreResp.Usage.OutputTokens > 0 {
-		usage.NormalizedInputTokens = coreResp.Usage.InputTokens
-		usage.NormalizedOutputTokens = coreResp.Usage.OutputTokens
-		usage.NormalizedCacheRead = coreResp.Usage.CachedInputTokens
-	}
+		if chatResp.Usage != nil {
+			usage.NormalizedInputTokens = chatResp.Usage.PromptTokens
+			usage.NormalizedOutputTokens = chatResp.Usage.CompletionTokens
+		}
 		status := "success"
-		if coreResp.Status == "failed" {
+		if oaiResp.Status == "failed" {
 			status = "error"
 		}
 		server.onRequestCompleted(chatReq.Model, preferred.UpstreamModel, preferred.ProviderKey, requestStart, usage, 0, status, "")
@@ -651,4 +624,95 @@ func (r *chatStreamingRecorder) Write(data []byte) (int, error) {
 
 func (r *chatStreamingRecorder) WriteHeader(code int) {
 	r.statusCode = code
+}
+
+// openaiResponseToChatResponse converts an OpenAI Response to a ChatResponse.
+// This bypasses the Core intermediate format for the Chat → handleWithAdapters
+// → OpenAI Response flow, avoiding the need for an openai-response ProviderAdapter.
+func openaiResponseToChatResponse(resp *openai.Response) *chat.ChatResponse {
+	if resp == nil {
+		return nil
+	}
+
+	chatResp := &chat.ChatResponse{
+		ID:      resp.ID,
+		Object:  "chat.completion",
+		Created: resp.CreatedAt,
+		Model:   resp.Model,
+	}
+
+	// Build the assistant message from output items.
+	var message chat.ChatMessage
+	message.Role = "assistant"
+
+	var contentParts []chat.ContentPart
+	var toolCalls []chat.ToolCall
+	var textContent string
+
+	for _, item := range resp.Output {
+		switch item.Type {
+		case "message":
+			for _, content := range item.Content {
+				switch content.Type {
+				case "output_text":
+					textContent += content.Text
+					contentParts = append(contentParts, chat.ContentPart{
+						Type: "text",
+						Text: content.Text,
+					})
+				}
+			}
+		case "function_call":
+			toolCalls = append(toolCalls, chat.ToolCall{
+				ID:   item.CallID,
+				Type: "function",
+				Function: chat.ToolCallFunc{
+					Name:      item.Name,
+					Arguments: json.RawMessage(item.Arguments),
+				},
+			})
+		}
+	}
+
+	// Set message content.
+	if len(contentParts) > 0 {
+		if len(contentParts) == 1 && contentParts[0].Type == "text" {
+			message.Content = contentParts[0].Text
+		} else {
+			message.Content = contentParts
+		}
+	} else if textContent != "" {
+		message.Content = textContent
+	}
+
+	if len(toolCalls) > 0 {
+		message.ToolCalls = toolCalls
+	}
+
+	// Determine finish reason.
+	finishReason := "stop"
+	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason == "max_output_tokens" {
+		finishReason = "length"
+	}
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+	if resp.Status == "failed" {
+		finishReason = "stop"
+	}
+
+	chatResp.Choices = []chat.Choice{{
+		Index:        0,
+		Message:     message,
+		FinishReason: finishReason,
+	}}
+
+	// Usage.
+	chatResp.Usage = &chat.Usage{
+		PromptTokens:     resp.Usage.InputTokens,
+		CompletionTokens: resp.Usage.OutputTokens,
+		TotalTokens:      resp.Usage.TotalTokens,
+	}
+
+	return chatResp
 }
