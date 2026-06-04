@@ -1024,6 +1024,7 @@ type inputItem struct {
 	Summary   json.RawMessage `json:"summary"`
 	CallID    string          `json:"call_id"`
 	Name      string          `json:"name"`
+	Namespace string          `json:"namespace"`
 	Arguments string          `json:"arguments"`
 	Output    json.RawMessage `json:"output"`
 	Input     string          `json:"input"`
@@ -1176,10 +1177,32 @@ func convertInput(raw json.RawMessage, model string) ([]format.CoreMessage, []fo
 			if !json.Valid([]byte(item.Arguments)) {
 				toolInput = json.RawMessage(`{}`)
 			}
+			toolName := item.Name
+			if item.Namespace != "" {
+				toolName = item.Namespace
+				var paramsObj any
+				if err := json.Unmarshal(toolInput, &paramsObj); err == nil {
+					nested := map[string]any{
+						"action": item.Name,
+						"params": paramsObj,
+					}
+					nestedBytes, err := json.Marshal(nested)
+					if err == nil {
+						toolInput = json.RawMessage(nestedBytes)
+					}
+				} else {
+					nested := map[string]any{
+						"action": item.Name,
+						"params": string(toolInput),
+					}
+					nestedBytes, _ := json.Marshal(nested)
+					toolInput = json.RawMessage(nestedBytes)
+				}
+			}
 			pendingFCBlocks = append(pendingFCBlocks, format.CoreContentBlock{
 				Type:      "tool_use",
 				ToolUseID: firstNonEmpty(item.CallID, item.ID),
-				ToolName:  item.Name,
+				ToolName:  toolName,
 				ToolInput: toolInput,
 			})
 
@@ -1736,6 +1759,9 @@ func flattenToolsWithNamespace(openaiTools []Tool, namespace string, disablePatc
 	seen := make(map[string]bool, len(result))
 	deduped := make([]format.CoreTool, 0, len(result))
 	for _, t := range result {
+		if t.Name == "" {
+			continue
+		}
 		if seen[t.Name] {
 			continue
 		}
