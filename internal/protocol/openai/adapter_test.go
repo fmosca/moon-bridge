@@ -366,6 +366,250 @@ func TestFromCoreStream_NoDuplicateDoneForToolUse(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Regression: malformed tool call arguments
+// ---------------------------------------------------------------------------
+
+// TestToCoreRequest_RepairedFunctionCallArguments verifies that when Codex
+// sends a function_call input item with a common trailing-bracket malformation,
+// the adapter successfully repairs the arguments and does NOT silently discard
+// them or generate an error.
+func TestToCoreRequest_RepairedFunctionCallArguments(t *testing.T) {
+	adapter := openai.NewOpenAIAdapter(format.CorePluginHooks{})
+
+	// This reproduces the exact scenario from the bug report:
+	// The model generated arguments with a trailing "]" making it invalid JSON:
+	//   {"edits":[...],"path":"/Users/.../Caddyfile.internal"}]
+	malformedArgs := `{"edits": [{"newText": "# --- LLM Proxy ---\\n\\nbridge.lan.fmosca.dev {\\n    import internal_tls\\n    import authelia\\n    reverse_proxy moonbridge:38440\\n}\\n\\n# --- Music ---", "oldText": "# --- Music ---"}], "path": "/Users/francesco.mosca/Work/ansible-homeserver/files/opt/fmosca.dev/caddy/Caddyfile.internal"}]`
+
+	req := &openai.ResponsesRequest{
+		Model: "gpt-4o",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_malformed","name":"filesystem_edit_file","arguments":"` + strings.ReplaceAll(malformedArgs, "\"", "\\\"") + `"},
+			{"type":"function_call_output","call_id":"call_malformed","output":"Error: MCP tool arguments must be a JSON object"}
+		]`),
+	}
+
+	result, err := adapter.ToCoreRequest(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Find the tool_use block
+	var toolUse *format.CoreContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content {
+			b := &result.Messages[i].Content[j]
+			if b.Type == "tool_use" && b.ToolUseID == "call_malformed" {
+				toolUse = b
+			}
+		}
+	}
+	if toolUse == nil {
+		t.Fatal("expected tool_use block with call_id=call_malformed")
+	}
+
+	parsed := map[string]any{}
+	if err := json.Unmarshal(toolUse.ToolInput, &parsed); err != nil {
+		t.Fatalf("tool_use ToolInput must be valid JSON, got: %s", string(toolUse.ToolInput))
+	}
+
+	// Since it is repaired, it should NOT contain a diagnostic, but have normal fields.
+	if _, hasError := parsed["_malformed_arguments_error"]; hasError {
+		t.Errorf("expected repaired arguments, but got malformed error key: %v", parsed)
+	}
+	if path, ok := parsed["path"].(string); !ok || path == "" {
+		t.Errorf("expected path to be populated, got: %v", parsed)
+	}
+}
+
+// TestToCoreRequest_MalformedFunctionCallArguments verifies that when Codex
+// sends a function_call input item with completely unrepairable JSON in arguments,
+// the adapter does NOT silently discard the arguments to `{}`. Instead it should
+// convert the failed tool call and its output into a plain text turn to avoid 400 validation crashes
+// on the upstream LLM API while preserving the full debugging context.
+func TestToCoreRequest_MalformedFunctionCallArguments(t *testing.T) {
+	adapter := openai.NewOpenAIAdapter(format.CorePluginHooks{})
+
+	unrepairableArgs := `{"edits":`
+
+	req := &openai.ResponsesRequest{
+		Model: "gpt-4o",
+		Input: json.RawMessage(`[
+			{"type":"function_call","call_id":"call_malformed","name":"filesystem_edit_file","arguments":"` + strings.ReplaceAll(unrepairableArgs, "\"", "\\\"") + `"},
+			{"type":"function_call_output","call_id":"call_malformed","output":"Error: MCP tool arguments must be a JSON object"}
+		]`),
+	}
+
+	result, err := adapter.ToCoreRequest(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify that we converted to plain text assistant/user messages
+	if len(result.Messages) < 2 {
+		t.Fatalf("expected at least 2 converted messages, got: %d", len(result.Messages))
+	}
+
+	msgAssistant := result.Messages[0]
+	if msgAssistant.Role != "assistant" {
+		t.Errorf("expected role assistant for first message, got: %s", msgAssistant.Role)
+	}
+	if len(msgAssistant.Content) != 1 || msgAssistant.Content[0].Type != "text" {
+		t.Fatalf("expected a single text block, got: %v", msgAssistant.Content)
+	}
+	if !strings.Contains(msgAssistant.Content[0].Text, "filesystem_edit_file") {
+		t.Errorf("expected text to mention tool name, got: %s", msgAssistant.Content[0].Text)
+	}
+	if !strings.Contains(msgAssistant.Content[0].Text, unrepairableArgs) {
+		t.Errorf("expected text to contain raw arguments, got: %s", msgAssistant.Content[0].Text)
+	}
+
+	msgUser := result.Messages[1]
+	if msgUser.Role != "user" {
+		t.Errorf("expected role user for second message, got: %s", msgUser.Role)
+	}
+	if len(msgUser.Content) != 1 || msgUser.Content[0].Type != "text" {
+		t.Fatalf("expected a single text block, got: %v", msgUser.Content)
+	}
+	expectedOutput := `Error: "Error: MCP tool arguments must be a JSON object"`
+	if msgUser.Content[0].Text != expectedOutput {
+		t.Errorf("expected text '%s', got: %s", expectedOutput, msgUser.Content[0].Text)
+	}
+}
+
+// TestFromCoreStream_RepairedNamespaceToolArgs verifies that when the
+// upstream model generates a tool_use block for a nested namespace tool with
+// a common trailing-bracket malformation, the streaming adapter successfully
+// repairs it and returns clean, valid arguments so the tool call can succeed.
+func TestFromCoreStream_RepairedNamespaceToolArgs(t *testing.T) {
+	adapter := openai.NewOpenAIAdapter(format.CorePluginHooks{})
+
+	// Build a CoreRequest with a tool map containing a namespace tool.
+	coreReq := &format.CoreRequest{
+		Model: "gpt-4o",
+		Extensions: map[string]any{
+			"codex_tool_map": map[string]any{
+				"mcp__filesystem": map[string]any{
+					"kind":        "nested_namespace",
+					"openai_name": "mcp__filesystem",
+					"namespace":  "",
+				},
+			},
+		},
+	}
+
+	// Simulate: model calls the namespace tool with malformed JSON params
+	evCh := make(chan format.CoreStreamEvent, 8)
+	evCh <- format.CoreStreamEvent{
+		Type:  format.CoreContentBlockStarted,
+		Index: 0,
+		ContentBlock: &format.CoreContentBlock{
+			Type:      "tool_use",
+			ToolUseID: "call_repaired",
+			ToolName:  "mcp__filesystem",
+		},
+	}
+	// Malformed arguments: trailing ']' at the end of params
+	malformedParams := `{"action":"edit_file","params":{"edits":[{"newText":"x"}],"path":"/foo.txt"}]}`
+	evCh <- format.CoreStreamEvent{Type: format.CoreToolCallArgsDelta, Index: 0, Delta: malformedParams}
+	evCh <- format.CoreStreamEvent{Type: format.CoreToolCallArgsDone, Index: 0, Delta: malformedParams}
+	evCh <- format.CoreStreamEvent{Type: format.CoreContentBlockDone, Index: 0}
+	evCh <- format.CoreStreamEvent{Type: format.CoreEventCompleted, Status: "completed"}
+	close(evCh)
+
+	streamAny, err := adapter.FromCoreStream(context.Background(), coreReq, evCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := streamAny.(<-chan openai.StreamEvent)
+
+	var argsDone openai.FunctionCallArgumentsDoneEvent
+	for ev := range stream {
+		if ev.Event == "response.function_call_arguments.done" {
+			argsDone = ev.Data.(openai.FunctionCallArgumentsDoneEvent)
+		}
+	}
+
+	// The arguments must be valid JSON (so Codex can parse them for the MCP call).
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(argsDone.Arguments), &parsed); err != nil {
+		t.Fatalf("function_call arguments must be valid JSON, got: %s\nunmarshal error: %v", argsDone.Arguments, err)
+	}
+
+	// Since it is repaired, it should NOT contain a diagnostic, but have normal fields.
+	if _, hasErr := parsed["_malformed_arguments_error"]; hasErr {
+		t.Errorf("expected repaired arguments, but got malformed error key: %v", parsed)
+	}
+	if path, ok := parsed["path"].(string); !ok || path != "/foo.txt" {
+		t.Errorf("expected path to be /foo.txt, got: %v", parsed)
+	}
+}
+
+// TestFromCoreStream_MalformedNamespaceToolArgs verifies that when the
+// upstream model generates a tool_use block for a nested namespace tool with
+// completely unrepairable arguments, the streaming adapter produces a function_call that
+// has valid Arguments (not garbage), and includes a diagnostic message.
+func TestFromCoreStream_MalformedNamespaceToolArgs(t *testing.T) {
+	adapter := openai.NewOpenAIAdapter(format.CorePluginHooks{})
+
+	// Build a CoreRequest with a tool map containing a namespace tool.
+	coreReq := &format.CoreRequest{
+		Model: "gpt-4o",
+		Extensions: map[string]any{
+			"codex_tool_map": map[string]any{
+				"mcp__filesystem": map[string]any{
+					"kind":        "nested_namespace",
+					"openai_name": "mcp__filesystem",
+					"namespace":  "",
+				},
+			},
+		},
+	}
+
+	// Simulate: model calls the namespace tool with unrepairable JSON params
+	evCh := make(chan format.CoreStreamEvent, 8)
+	evCh <- format.CoreStreamEvent{
+		Type:  format.CoreContentBlockStarted,
+		Index: 0,
+		ContentBlock: &format.CoreContentBlock{
+			Type:      "tool_use",
+			ToolUseID: "call_bad",
+			ToolName:  "mcp__filesystem",
+		},
+	}
+	unrepairableParams := `{"action":"edit_file","params":{invalid garbage`
+	evCh <- format.CoreStreamEvent{Type: format.CoreToolCallArgsDelta, Index: 0, Delta: unrepairableParams}
+	evCh <- format.CoreStreamEvent{Type: format.CoreToolCallArgsDone, Index: 0, Delta: unrepairableParams}
+	evCh <- format.CoreStreamEvent{Type: format.CoreContentBlockDone, Index: 0}
+	evCh <- format.CoreStreamEvent{Type: format.CoreEventCompleted, Status: "completed"}
+	close(evCh)
+
+	streamAny, err := adapter.FromCoreStream(context.Background(), coreReq, evCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := streamAny.(<-chan openai.StreamEvent)
+
+	var argsDone openai.FunctionCallArgumentsDoneEvent
+	for ev := range stream {
+		if ev.Event == "response.function_call_arguments.done" {
+			argsDone = ev.Data.(openai.FunctionCallArgumentsDoneEvent)
+		}
+	}
+
+	// The arguments must be valid JSON (so Codex can parse them for the MCP call).
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(argsDone.Arguments), &parsed); err != nil {
+		t.Fatalf("function_call arguments must be valid JSON, got: %s\nunmarshal error: %v", argsDone.Arguments, err)
+	}
+
+	// Should contain a diagnostic about malformed arguments.
+	if _, hasErr := parsed["_malformed_arguments_error"]; !hasErr {
+		t.Errorf("expected _malformed_arguments_error key in arguments, got: %v", parsed)
+	}
+}
+
 // TestToCoreRequest_NamespacedToolCallReconstruction verifies that when Codex
 // sends a history item with a namespace (e.g. name="edit_file", namespace="mcp__filesystem"),
 // it is reconstructed as a nested call to the namespace tool mcp__filesystem with nested action and params.
@@ -423,3 +667,4 @@ func TestToCoreRequest_NamespacedToolCallReconstruction(t *testing.T) {
 		t.Errorf("expected path to be '/Users/test/file', got: %v", params["path"])
 	}
 }
+

@@ -674,7 +674,29 @@ func (a *OpenAIAdapter) streamLoop(ctx context.Context, coreReq *format.CoreRequ
 					Params json.RawMessage `json:"params"`
 				}
 				var call nestedCall
-				_ = json.Unmarshal([]byte(finalArgs), &call)
+				err := json.Unmarshal([]byte(finalArgs), &call)
+
+				if err != nil || !json.Valid(call.Params) {
+					// Try to repair the JSON first
+					repaired := codextool.TryRepairJSON(finalArgs)
+					if err2 := json.Unmarshal([]byte(repaired), &call); err2 == nil && json.Valid(call.Params) {
+						err = nil
+					}
+				}
+
+				if err != nil || !json.Valid(call.Params) {
+					// The model produced malformed JSON for the nested namespace call.
+					// Instead of forwarding empty/invalid arguments, produce a
+					// diagnostic JSON object that the model can understand and self-correct.
+					diag, _ := json.Marshal(map[string]any{
+						"_malformed_arguments_error": "The tool call arguments contained invalid JSON and could not be parsed. The arguments must be a valid JSON object with \"action\" (tool name) and \"params\" (tool parameters as a JSON object). Please retry with correctly structured arguments.",
+						"_raw_arguments":             finalArgs,
+					})
+					if call.Action == "" {
+						call.Action = nBuf.toolName
+					}
+					call.Params = diag
+				}
 
 				// 1. Emit output_item.added with the clean action name as Name, and toolName as Namespace!
 				item := OutputItem{
@@ -1175,7 +1197,20 @@ func convertInput(raw json.RawMessage, model string) ([]format.CoreMessage, []fo
 			}
 			toolInput := json.RawMessage(item.Arguments)
 			if !json.Valid([]byte(item.Arguments)) {
-				toolInput = json.RawMessage(`{}`)
+				// Try to repair the JSON first
+				repaired := codextool.TryRepairJSON(item.Arguments)
+				if json.Valid([]byte(repaired)) {
+					toolInput = json.RawMessage(repaired)
+				} else {
+					// Instead of silently discarding malformed arguments to {},
+					// attach a diagnostic so the model can understand what went
+					// wrong and self-correct on the next turn.
+					diag, _ := json.Marshal(map[string]any{
+						"_malformed_arguments_error": "The arguments for this tool call contained invalid JSON and could not be parsed. Review the argument structure and ensure it is a valid JSON object matching the tool's input schema.",
+						"_raw_arguments":             item.Arguments,
+					})
+					toolInput = diag
+				}
 			}
 			toolName := item.Name
 			if item.Namespace != "" {
