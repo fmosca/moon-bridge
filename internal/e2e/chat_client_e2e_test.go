@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"moonbridge/internal/config"
@@ -21,30 +22,29 @@ import (
 //
 // Inbound Chat Completions → Core → Outbound Chat Completions.
 //
-// Simulates a client posting an OpenAI Chat Completions request to Moon Bridge,
-// which routes through Core to an upstream that also speaks Chat Completions.
-// This exercises the full inbound ChatClientAdapter → Core → ChatProviderAdapter
-// round-trip, which is the path used by clients like Chatwise.
+// Exercises the full inbound ChatClientAdapter → Core → ChatProviderAdapter
+// round-trip. When TEST_OPENAI_API_KEY is set, runs against a real upstream.
 
 func TestChatClientE2E_TextRoundTrip(t *testing.T) {
+	if apiKey := os.Getenv("TEST_OPENAI_API_KEY"); apiKey != "" {
+		t.Run("real", func(t *testing.T) { testChatClientRealRoundTrip(t, apiKey) })
+		return
+	}
+
 	ctx := context.Background()
 	cfg := e2eMinimalConfig()
 	hooks := format.CorePluginHooks{}.WithDefaults()
 	reg := newTestRegistry(t, cfg, hooks)
 
-	// Get the Chat client adapter (inbound).
 	chatClientAdapter, ok := reg.GetClient(config.ProtocolOpenAIChat)
 	if !ok {
 		t.Fatal("chat client adapter not found in registry")
 	}
-
-	// Get the Chat provider adapter (outbound).
 	chatProviderAdapter, ok := reg.GetProvider(config.ProtocolOpenAIChat)
 	if !ok {
 		t.Fatal("chat provider adapter not found in registry")
 	}
 
-	// Mock upstream Chat Completions server.
 	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			t.Errorf("method = %q, want POST", r.Method)
@@ -66,7 +66,6 @@ func TestChatClientE2E_TextRoundTrip(t *testing.T) {
 	}))
 	defer mockSrv.Close()
 
-	// Step 1: Build an inbound Chat Completions request.
 	chatReq := &chat.ChatRequest{
 		Model: "deepseek-flash",
 		Messages: []chat.ChatMessage{
@@ -76,13 +75,11 @@ func TestChatClientE2E_TextRoundTrip(t *testing.T) {
 		MaxTokens: 100,
 	}
 
-	// Step 2: Inbound ChatClientAdapter.ToCoreRequest.
 	coreReq, err := chatClientAdapter.ToCoreRequest(ctx, chatReq)
 	if err != nil {
 		t.Fatalf("ChatClientAdapter.ToCoreRequest: %v", err)
 	}
 
-	// Verify Core request conversion.
 	if coreReq.Model != "deepseek-flash" {
 		t.Errorf("coreReq.Model = %q, want deepseek-flash", coreReq.Model)
 	}
@@ -96,19 +93,16 @@ func TestChatClientE2E_TextRoundTrip(t *testing.T) {
 		t.Errorf("coreReq.MaxTokens = %d, want 100", coreReq.MaxTokens)
 	}
 
-	// Step 3: Outbound ChatProviderAdapter.FromCoreRequest.
 	upstreamAny, err := chatProviderAdapter.FromCoreRequest(ctx, coreReq)
 	if err != nil {
 		t.Fatalf("ChatProviderAdapter.FromCoreRequest: %v", err)
 	}
 	upstreamReq := upstreamAny.(*chat.ChatRequest)
 
-	// Verify outbound Chat request was constructed correctly.
 	if len(upstreamReq.Messages) < 2 {
 		t.Fatalf("upstream messages: got %d, want at least 2 (system + user)", len(upstreamReq.Messages))
 	}
 
-	// Step 4: Call mock upstream.
 	chatUpstreamClient := chat.NewClient(chat.ClientConfig{
 		BaseURL: mockSrv.URL,
 		APIKey:  "test-key",
@@ -119,13 +113,11 @@ func TestChatClientE2E_TextRoundTrip(t *testing.T) {
 		t.Fatalf("CreateChat: %v", err)
 	}
 
-	// Step 5: Outbound ChatProviderAdapter.ToCoreResponse.
 	coreResp, err := chatProviderAdapter.ToCoreResponse(ctx, upstreamResp)
 	if err != nil {
 		t.Fatalf("ChatProviderAdapter.ToCoreResponse: %v", err)
 	}
 
-	// Verify Core response.
 	if coreResp.Status != "completed" {
 		t.Errorf("coreResp.Status = %q, want completed", coreResp.Status)
 	}
@@ -136,14 +128,12 @@ func TestChatClientE2E_TextRoundTrip(t *testing.T) {
 		t.Errorf("coreResp.Messages[0].Role = %q, want assistant", coreResp.Messages[0].Role)
 	}
 
-	// Step 6: Inbound ChatClientAdapter.FromCoreResponse.
 	outAny, err := chatClientAdapter.FromCoreResponse(ctx, coreResp)
 	if err != nil {
 		t.Fatalf("ChatClientAdapter.FromCoreResponse: %v", err)
 	}
 	chatResp := outAny.(*chat.ChatResponse)
 
-	// Verify final Chat Completions response.
 	if chatResp.Object != "chat.completion" {
 		t.Errorf("chatResp.Object = %q, want chat.completion", chatResp.Object)
 	}
@@ -170,10 +160,15 @@ func TestChatClientE2E_TextRoundTrip(t *testing.T) {
 // ============================================================================
 //
 // Tests inbound Chat → Core → outbound Chat with tool calls.
-// This exercises the tool_calls ↔ tool_use content block mapping
+// Exercises the tool_calls ↔ tool_use content block mapping
 // through the full adapter pipeline.
 
 func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
+	if apiKey := os.Getenv("TEST_OPENAI_API_KEY"); apiKey != "" {
+		t.Run("real", func(t *testing.T) { testChatClientRealToolRoundTrip(t, apiKey) })
+		return
+	}
+
 	ctx := context.Background()
 	cfg := e2eMinimalConfig()
 	hooks := format.CorePluginHooks{}.WithDefaults()
@@ -188,7 +183,6 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 		t.Fatal("chat provider adapter not found")
 	}
 
-	// Mock upstream returning a tool call.
 	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -203,7 +197,6 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 	}))
 	defer mockSrv.Close()
 
-	// Inbound request with tool definitions.
 	chatReq := &chat.ChatRequest{
 		Model: "gpt-4o",
 		Messages: []chat.ChatMessage{
@@ -220,7 +213,6 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 		ToolChoice: json.RawMessage(`"auto"`),
 	}
 
-	// Inbound ChatClientAdapter → Core.
 	coreReq, err := chatClientAdapter.ToCoreRequest(ctx, chatReq)
 	if err != nil {
 		t.Fatalf("ToCoreRequest: %v", err)
@@ -236,7 +228,6 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 		t.Fatal("coreReq.ToolChoice is nil")
 	}
 
-	// Core → Outbound ChatProviderAdapter → upstream request.
 	upstreamAny, err := chatProviderAdapter.FromCoreRequest(ctx, coreReq)
 	if err != nil {
 		t.Fatalf("FromCoreRequest: %v", err)
@@ -247,7 +238,6 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 		t.Fatalf("upstreamReq.Tools: got %d, want 1", len(upstreamReq.Tools))
 	}
 
-	// Call mock upstream.
 	chatUpstreamClient := chat.NewClient(chat.ClientConfig{
 		BaseURL: mockSrv.URL,
 		APIKey:  "test-key",
@@ -258,7 +248,6 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 		t.Fatalf("CreateChat: %v", err)
 	}
 
-	// Upstream → Core.
 	coreResp, err := chatProviderAdapter.ToCoreResponse(ctx, upstreamResp)
 	if err != nil {
 		t.Fatalf("ToCoreResponse: %v", err)
@@ -268,7 +257,6 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 		t.Errorf("coreResp.StopReason = %q, want tool_use", coreResp.StopReason)
 	}
 
-	// Core → Inbound Chat response.
 	outAny, err := chatClientAdapter.FromCoreResponse(ctx, coreResp)
 	if err != nil {
 		t.Fatalf("FromCoreResponse: %v", err)
@@ -294,6 +282,10 @@ func TestChatClientE2E_ToolUseRoundTrip(t *testing.T) {
 // Verifies that Chat clients can route to Anthropic upstream providers.
 
 func TestChatClientE2E_CrossProtocolToAnthropic(t *testing.T) {
+	if apiKey := os.Getenv("TEST_ANTHROPIC_API_KEY"); apiKey != "" {
+		t.Skip("Real mode: testAnthropicRealClient covers the Anthropic path; skip mock test")
+	}
+
 	ctx := context.Background()
 	cfg := e2eMinimalConfig()
 	hooks := format.CorePluginHooks{}.WithDefaults()
@@ -308,7 +300,6 @@ func TestChatClientE2E_CrossProtocolToAnthropic(t *testing.T) {
 		t.Fatal("anthropic provider adapter not found")
 	}
 
-	// Inbound Chat request.
 	chatReq := &chat.ChatRequest{
 		Model: "claude-3.5-sonnet",
 		Messages: []chat.ChatMessage{
@@ -318,24 +309,171 @@ func TestChatClientE2E_CrossProtocolToAnthropic(t *testing.T) {
 		MaxTokens: 50,
 	}
 
-	// Chat → Core.
 	coreReq, err := chatClientAdapter.ToCoreRequest(ctx, chatReq)
 	if err != nil {
 		t.Fatalf("ToCoreRequest: %v", err)
 	}
 
-	// Core → Anthropic.
 	upstreamAny, err := anthProviderAdapter.FromCoreRequest(ctx, coreReq)
 	if err != nil {
 		t.Fatalf("AnthropicProviderAdapter.FromCoreRequest: %v", err)
 	}
 
-	// Verify we got an Anthropic request type.
 	if upstreamAny == nil {
 		t.Fatal("upstream request is nil")
 	}
-
-	// Verify the Anthropic request has the system prompt and user message.
-	// We don't call a real upstream, just verify the conversion worked.
 	_ = upstreamAny
+}
+
+// ============================================================================
+// Real upstream helpers (opt-in via TEST_OPENAI_API_KEY)
+// ============================================================================
+
+// testChatClientRealRoundTrip exercises the full adapter chain
+// (ChatClientAdapter → ChatProviderAdapter) against a real upstream.
+func testChatClientRealRoundTrip(t *testing.T, apiKey string) {
+	t.Helper()
+
+	ctx := context.Background()
+	cfg := e2eMinimalConfig()
+	hooks := format.CorePluginHooks{}.WithDefaults()
+	reg := newTestRegistry(t, cfg, hooks)
+
+	chatClientAdapter, _ := reg.GetClient(config.ProtocolOpenAIChat)
+	chatProviderAdapter, _ := reg.GetProvider(config.ProtocolOpenAIChat)
+
+	model := realChatModel()
+	baseURL := os.Getenv("TEST_OPENAI_BASE_URL")
+
+	chatReq := &chat.ChatRequest{
+		Model: model,
+		Messages: []chat.ChatMessage{
+			{Role: "user", Content: "say hello in exactly one word"},
+		},
+		MaxTokens: 50,
+	}
+
+	coreReq, err := chatClientAdapter.ToCoreRequest(ctx, chatReq)
+	if err != nil {
+		t.Fatalf("ToCoreRequest: %v", err)
+	}
+
+	coreReq.Model = model
+
+	upstreamAny, err := chatProviderAdapter.FromCoreRequest(ctx, coreReq)
+	if err != nil {
+		t.Fatalf("FromCoreRequest: %v", err)
+	}
+	upstreamReq := upstreamAny.(*chat.ChatRequest)
+
+	chatClient := chat.NewClient(chat.ClientConfig{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+	})
+	upstreamResp, err := chatClient.CreateChat(ctx, upstreamReq)
+	if err != nil {
+		t.Fatalf("CreateChat (real): %v", err)
+	}
+
+	coreResp, err := chatProviderAdapter.ToCoreResponse(ctx, upstreamResp)
+	if err != nil {
+		t.Fatalf("ToCoreResponse: %v", err)
+	}
+
+	outAny, err := chatClientAdapter.FromCoreResponse(ctx, coreResp)
+	if err != nil {
+		t.Fatalf("FromCoreResponse: %v", err)
+	}
+	chatResp := outAny.(*chat.ChatResponse)
+
+	if chatResp.Object != "chat.completion" {
+		t.Errorf("Object = %q, want chat.completion", chatResp.Object)
+	}
+	if len(chatResp.Choices) == 0 {
+		t.Fatal("response has no choices")
+	}
+	content, ok := chatResp.Choices[0].Message.Content.(string)
+	if !ok || content == "" {
+		t.Error("response content is empty or not a string")
+	}
+	t.Logf("Real inbound round-trip: model=%s id=%s text=%q", chatResp.Model, chatResp.ID, content)
+}
+
+// testChatClientRealToolRoundTrip exercises the tool-call path
+// through the full adapter chain against a real upstream.
+func testChatClientRealToolRoundTrip(t *testing.T, apiKey string) {
+	t.Helper()
+
+	ctx := context.Background()
+	cfg := e2eMinimalConfig()
+	hooks := format.CorePluginHooks{}.WithDefaults()
+	reg := newTestRegistry(t, cfg, hooks)
+
+	chatClientAdapter, _ := reg.GetClient(config.ProtocolOpenAIChat)
+	chatProviderAdapter, _ := reg.GetProvider(config.ProtocolOpenAIChat)
+
+	model := realChatModel()
+	baseURL := os.Getenv("TEST_OPENAI_BASE_URL")
+
+	chatReq := &chat.ChatRequest{
+		Model: model,
+		Messages: []chat.ChatMessage{
+			{Role: "user", Content: "What is the weather in Paris?"},
+		},
+		Tools: []chat.ChatTool{{
+			Type: "function",
+			Function: chat.FunctionDef{
+				Name:        "get_weather",
+				Description: "Get the current weather for a city",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]any{"type": "string"},
+					},
+					"required": []string{"city"},
+				},
+			},
+		}},
+		ToolChoice: json.RawMessage(`"auto"`),
+		MaxTokens:  100,
+	}
+
+	coreReq, err := chatClientAdapter.ToCoreRequest(ctx, chatReq)
+	if err != nil {
+		t.Fatalf("ToCoreRequest: %v", err)
+	}
+
+	coreReq.Model = model
+
+	upstreamAny, err := chatProviderAdapter.FromCoreRequest(ctx, coreReq)
+	if err != nil {
+		t.Fatalf("FromCoreRequest: %v", err)
+	}
+	upstreamReq := upstreamAny.(*chat.ChatRequest)
+
+	chatClient := chat.NewClient(chat.ClientConfig{
+		BaseURL: baseURL,
+		APIKey:  apiKey,
+	})
+	upstreamResp, err := chatClient.CreateChat(ctx, upstreamReq)
+	if err != nil {
+		t.Fatalf("CreateChat (real): %v", err)
+	}
+
+	coreResp, err := chatProviderAdapter.ToCoreResponse(ctx, upstreamResp)
+	if err != nil {
+		t.Fatalf("ToCoreResponse: %v", err)
+	}
+
+	outAny, err := chatClientAdapter.FromCoreResponse(ctx, coreResp)
+	if err != nil {
+		t.Fatalf("FromCoreResponse: %v", err)
+	}
+	chatResp := outAny.(*chat.ChatResponse)
+
+	if len(chatResp.Choices) == 0 {
+		t.Fatal("response has no choices")
+	}
+	t.Logf("Real tool round-trip: model=%s finish=%q tools=%d",
+		chatResp.Model, chatResp.Choices[0].FinishReason, len(chatResp.Choices[0].Message.ToolCalls))
 }
