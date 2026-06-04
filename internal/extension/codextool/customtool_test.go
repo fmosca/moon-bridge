@@ -123,3 +123,46 @@ func TestOutputItemFromBlockForToolNestedNamespace(t *testing.T) {
 		t.Errorf("expected isLocalShell false, got true")
 	}
 }
+
+func TestTryRepairJSON(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "valid json remains unchanged",
+			input:    `{"action":"edit_file","params":{"path":"/foo.txt"}}`,
+			expected: `{"action":"edit_file","params":{"path":"/foo.txt"}}`,
+		},
+		{
+			name:     "ends with ]}",
+			input:    `{"action":"edit_file","params":{"path":"/foo.txt"}]}`,
+			expected: `{"action":"edit_file","params":{"path":"/foo.txt"}}`,
+		},
+		{
+			name:     "ends with ]",
+			input:    `{"path":"/foo.txt"}]`,
+			expected: `{"path":"/foo.txt"}`,
+		},
+		{
+			name:     "nested object closed with ]",
+			input:    `{"action":"edit_file","params":{"edits":[{"newText":"x"}],"path":"/foo.txt"}]}`,
+			expected: `{"action":"edit_file","params":{"edits":[{"newText":"x"}],"path":"/foo.txt"}}`,
+		},
+		{
+			name:     "completely unrepairable",
+			input:    `{invalid json`,
+			expected: `{invalid json`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TryRepairJSON(tc.input)
+			if got != tc.expected {
+				t.Errorf("TryRepairJSON(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}

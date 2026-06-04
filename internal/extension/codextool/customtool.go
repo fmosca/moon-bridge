@@ -129,9 +129,42 @@ type nestedCall struct {
 	Params json.RawMessage `json:"params"`
 }
 
+// TryRepairJSON attempts to repair common JSON syntax errors produced by LLMs
+// (such as trailing brackets or braces instead of parentheses, or vice versa)
+// and returns the repaired string if it is valid JSON. Otherwise, it returns
+// the original string.
+func TryRepairJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || json.Valid([]byte(s)) {
+		return s
+	}
+
+	// Try removing or replacing the last ']'
+	if idx := strings.LastIndex(s, "]"); idx != -1 {
+		// Try removing the ']'
+		candidate1 := s[:idx] + s[idx+1:]
+		if json.Valid([]byte(candidate1)) {
+			return candidate1
+		}
+
+		// Try replacing ']' with '}'
+		candidate2 := s[:idx] + "}" + s[idx+1:]
+		if json.Valid([]byte(candidate2)) {
+			return candidate2
+		}
+	}
+
+	return s
+}
+
 func decodeNestedNamespaceArguments(input json.RawMessage) (string, string) {
 	var call nestedCall
 	if err := json.Unmarshal(input, &call); err != nil {
+		// Try to repair the JSON first
+		repaired := TryRepairJSON(string(input))
+		if err2 := json.Unmarshal([]byte(repaired), &call); err2 == nil {
+			return call.Action, string(call.Params)
+		}
 		return "", string(input)
 	}
 	return call.Action, string(call.Params)
