@@ -1,6 +1,6 @@
 # API 接口
 
-Moon Bridge 对外暴露 OpenAI Responses 兼容端点、模型列表端点和可选的管理 API。
+Moon Bridge 对外暴露 OpenAI Responses 兼容端点、OpenAI Chat Completions 兼容端点、模型列表端点和可选的管理 API。
 
 ## 基础信息
 
@@ -55,6 +55,56 @@ data: {"delta": "Hello"}
 event: response.completed
 data: {"response": {...}}
 ```
+
+### POST /v1/chat/completions
+
+OpenAI Chat Completions API 兼容端点。支持 Chatwise、Continue、LangChain 等
+使用 OpenAI Chat 协议的客户端通过 Moon Bridge 访问任意上游 Provider。
+
+**关键请求字段**：
+
+| 字段 | 类型 | 说明 |
+|-------|------|-------------|
+| `model` | string | 模型名或路由别名 |
+| `messages` | array | 消息数组（system/user/assistant/tool） |
+| `tools` | array | 工具定义列表 |
+| `tool_choice` | string/object | 工具选择策略 |
+| `max_completion_tokens` | number | 最大输出 token 数 |
+| `temperature` | number | 采样温度 |
+| `top_p` | number | Top-P 采样 |
+| `stream` | boolean | 是否启用流式响应 |
+| `stop` | array | 停止序列 |
+
+**响应格式**：
+
+```json
+{
+  "id": "chatcmpl-xxx",
+  "object": "chat.completion",
+  "model": "deepseek-v4-flash:cloud",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "Hello!"},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 10, "completion_tokens": 42, "total_tokens": 52}
+}
+```
+
+**流式响应**（`stream: true`）使用 Server-Sent Events 格式：
+
+```
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello"}}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","choices":[{"finish_reason":"stop"}]}
+data: [DONE]
+```
+
+**与 Chatwise 集成**：将 Moon Bridge 配置为自定义 OpenAI Chat Provider：
+
+- Base URL: `http://127.0.0.1:38440/v1`
+- API Key: 任意非空值（如 `sk-moonbridge`）
+- Model: 在 Moon Bridge `routes` 中定义的模型别名
 
 ### GET /v1/models
 

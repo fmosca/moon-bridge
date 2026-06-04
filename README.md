@@ -63,6 +63,16 @@ api_key = "any-non-empty-value"
 claude --model your-alias --api-url http://127.0.0.1:38440 --api-key any-value
 ```
 
+## 与 Chatwise 配合使用
+
+Chatwise 使用 OpenAI Chat Completions 协议，将 Moon Bridge 配置为自定义 Provider 即可：
+
+- **Base URL**: `http://127.0.0.1:38440/v1`
+- **API Key**: 任意非空值（如 `sk-moonbridge`）
+- **Model**: 在 Moon Bridge `routes` 中定义的模型别名
+
+Chatwise 发送 `/v1/chat/completions` 请求，Moon Bridge 自动路由到对应上游 Provider 并进行协议转换。
+
 ## Docker 部署
 
 ```bash
@@ -90,6 +100,8 @@ docker run -p 38440:38440 -v $(pwd)/config.yml:/config/config.yml moonbridge
 |------|------|------|
 | `/v1/responses` | POST | OpenAI Responses API 主入口 |
 | `/responses` | POST | 同上（无 `/v1` 前缀） |
+| `/v1/chat/completions` | POST | OpenAI Chat Completions API 入口 |
+| `/chat/completions` | POST | 同上（无 `/v1` 前缀） |
 | `/v1/models` | GET | 列出可用模型 |
 | `/models` | GET | 同上 |
 | `/api/v1/` | — | 管理 API（需启用持久化） |

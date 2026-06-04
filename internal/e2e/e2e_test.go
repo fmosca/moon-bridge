@@ -130,6 +130,15 @@ func newTestRegistry(t testing.TB, cfg config.Config, hooks format.CorePluginHoo
 		t.Fatalf("RegisterProviderStream(openai-chat): %v", err)
 	}
 
+	// --- OpenAI Chat client adapter (inbound) ---
+	chatClientAdapter := chat.NewChatClientAdapter(hooks)
+	if err := reg.RegisterClient(chatClientAdapter); err != nil {
+		t.Fatalf("RegisterClient(openai-chat): %v", err)
+	}
+	if err := reg.RegisterClientStream(chatClientAdapter); err != nil {
+		t.Fatalf("RegisterClientStream(openai-chat): %v", err)
+	}
+
 	return reg
 }
 
@@ -203,10 +212,10 @@ func loadDotEnv(t testing.TB) {
 			f, err := os.Open(path)
 			if err != nil {
 				if t != nil {
-				t.Logf("warning: cannot open %s: %v", path, err)
-			} else {
-				println("warning: cannot open", path, err.Error())
-			}
+					t.Logf("warning: cannot open %s: %v", path, err)
+				} else {
+					println("warning: cannot open", path, err.Error())
+				}
 				return
 			}
 			defer f.Close()
@@ -233,7 +242,9 @@ func loadDotEnv(t testing.TB) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Log(".env.test not found — relying on OS env vars")
+			if t != nil {
+				t.Log(".env.test not found — relying on OS env vars")
+			}
 			return
 		}
 		dir = parent
