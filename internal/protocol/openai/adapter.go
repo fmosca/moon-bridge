@@ -1103,9 +1103,41 @@ func convertInput(raw json.RawMessage, model string) ([]format.CoreMessage, []fo
 	system := make([]format.CoreContentBlock, 0)
 	var pendingReasoning []format.CoreContentBlock
 	var pendingFCBlocks []format.CoreContentBlock // batch consecutive function_calls
+	unrepairableCallIDs := make(map[string]bool)
 
 	for _, item := range items {
 		if isToolCallOutputType(item.Type) {
+			if unrepairableCallIDs[item.CallID] {
+				// Flush any pending function_calls and reasoning before converting the output
+				if len(pendingFCBlocks) > 0 {
+					flushed := make([]format.CoreContentBlock, len(pendingFCBlocks))
+					copy(flushed, pendingFCBlocks)
+					messages = append(messages, format.CoreMessage{
+						Role:    "assistant",
+						Content: flushed,
+					})
+					pendingFCBlocks = pendingFCBlocks[:0]
+				}
+				if len(pendingReasoning) > 0 {
+					flushedReasoning := make([]format.CoreContentBlock, len(pendingReasoning))
+					copy(flushedReasoning, pendingReasoning)
+					messages = append(messages, format.CoreMessage{
+						Role:    "assistant",
+						Content: flushedReasoning,
+					})
+					pendingReasoning = pendingReasoning[:0]
+				}
+				// Convert to a regular text block from user, completely bypassing tool role requirements
+				messages = append(messages, format.CoreMessage{
+					Role: "user",
+					Content: []format.CoreContentBlock{{
+						Type: "text",
+						Text: fmt.Sprintf("Error: %s", item.Output),
+					}},
+				})
+				continue
+			}
+
 			// Keep any pending reasoning within the same assistant tool-call turn.
 			// Emitting a standalone assistant reasoning message here would break
 			// the required adjacency of assistant tool_use -> immediate tool_result.
@@ -1202,14 +1234,39 @@ func convertInput(raw json.RawMessage, model string) ([]format.CoreMessage, []fo
 				if json.Valid([]byte(repaired)) {
 					toolInput = json.RawMessage(repaired)
 				} else {
-					// Instead of silently discarding malformed arguments to {},
-					// attach a diagnostic so the model can understand what went
-					// wrong and self-correct on the next turn.
-					diag, _ := json.Marshal(map[string]any{
-						"_malformed_arguments_error": "The arguments for this tool call contained invalid JSON and could not be parsed. Review the argument structure and ensure it is a valid JSON object matching the tool's input schema.",
-						"_raw_arguments":             item.Arguments,
+					// We couldn't repair the JSON! To prevent turn-start 400 crashes on the upstream
+					// LLM API due to strict historical argument schema validation, we convert this
+					// failed tool call and its corresponding output into a plain text assistant/user turn.
+					callID := firstNonEmpty(item.CallID, item.ID)
+					unrepairableCallIDs[callID] = true
+
+					if len(pendingFCBlocks) > 0 {
+						flushed := make([]format.CoreContentBlock, len(pendingFCBlocks))
+						copy(flushed, pendingFCBlocks)
+						messages = append(messages, format.CoreMessage{
+							Role:    "assistant",
+							Content: flushed,
+						})
+						pendingFCBlocks = pendingFCBlocks[:0]
+					}
+					if len(pendingReasoning) > 0 {
+						flushedReasoning := make([]format.CoreContentBlock, len(pendingReasoning))
+						copy(flushedReasoning, pendingReasoning)
+						messages = append(messages, format.CoreMessage{
+							Role:    "assistant",
+							Content: flushedReasoning,
+						})
+						pendingReasoning = pendingReasoning[:0]
+					}
+
+					messages = append(messages, format.CoreMessage{
+						Role: "assistant",
+						Content: []format.CoreContentBlock{{
+							Type: "text",
+							Text: fmt.Sprintf("I attempted to call the tool `%s` but the generated arguments were malformed JSON:\n```json\n%s\n```", item.Name, item.Arguments),
+						}},
 					})
-					toolInput = diag
+					continue
 				}
 			}
 			toolName := item.Name
