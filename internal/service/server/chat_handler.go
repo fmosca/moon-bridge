@@ -338,6 +338,42 @@ func (server *Server) dispatchChatStream(
 	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
 
+	// Accumulate tool call state across deltas (name + arguments arrive in separate events).
+	type toolAcc struct {
+		name string
+		args strings.Builder
+	}
+	toolCalls := make(map[string]*toolAcc)
+	var toolCallOrder []string
+
+	emitAccumulatedTools := func() {
+		if len(toolCallOrder) == 0 {
+			return
+		}
+		if !sentRole {
+			sentRole = true
+			writeChatSSEChunk(w, chatID, chatReq.Model, created, 0, chat.Delta{Role: "assistant"}, "", nil)
+		}
+		var tcs []chat.ToolCall
+		for _, callID := range toolCallOrder {
+			acc := toolCalls[callID]
+			idx := 0
+			tcs = append(tcs, chat.ToolCall{
+				ID:       callID,
+				Type:     "function",
+				Index:    &idx,
+				Function: chat.ToolCallFunc{Name: acc.name, Arguments: json.RawMessage(acc.args.String())},
+			})
+		}
+		writeChatSSEChunk(w, chatID, chatReq.Model, created, 0, chat.Delta{ToolCalls: tcs}, "", nil)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		// Clear accumulated state.
+		toolCalls = make(map[string]*toolAcc)
+		toolCallOrder = nil
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -392,32 +428,6 @@ func (server *Server) dispatchChatStream(
 				flusher.Flush()
 			}
 
-		case "response.function_call_arguments.delta":
-			if !sentRole {
-				sentRole = true
-				writeChatSSEChunk(w, chatID, chatReq.Model, created, 0, chat.Delta{Role: "assistant"}, "", nil)
-				if flusher != nil {
-					flusher.Flush()
-			}
-			}
-			// Extract tool call info from the event.
-			var tc []chat.ToolCall
-			if callID, ok := evt["call_id"].(string); ok {
-				name := ""
-				if n, ok2 := evt["name"].(string); ok2 {
-					name = n
-				}
-				args, _ := evt["delta"].(string)
-				tc = []chat.ToolCall{{
-					ID:       callID,
-					Type:     "function",
-					Function: chat.ToolCallFunc{Name: name, Arguments: json.RawMessage(args)},
-				}}
-			}
-			writeChatSSEChunk(w, chatID, chatReq.Model, created, 0, chat.Delta{ToolCalls: tc}, "", nil)
-			if flusher != nil {
-				flusher.Flush()
-			}
 
 		case "response.completed":
 			// Extract usage and finish reason from the completed event.
@@ -466,28 +476,42 @@ func (server *Server) dispatchChatStream(
 			}
 
 		case "response.output_item.added":
-			// New output item — check if tool call.
+			// Capture function_call metadata for later emission via accumulation.
 			if item, ok := evt["item"].(map[string]any); ok {
 				if t, _ := item["type"].(string); t == "function_call" {
-					if !sentRole {
-						sentRole = true
-						writeChatSSEChunk(w, chatID, chatReq.Model, created, 0, chat.Delta{Role: "assistant"}, "", nil)
-						if flusher != nil {
-							flusher.Flush()
-						}
-					}
 					callID, _ := item["call_id"].(string)
 					name, _ := item["name"].(string)
-					tc := []chat.ToolCall{{
-						ID:       callID,
-						Type:     "function",
-						Index:    intPtr(0),
-						Function: chat.ToolCallFunc{Name: name},
-					}}
-					writeChatSSEChunk(w, chatID, chatReq.Model, created, 0, chat.Delta{ToolCalls: tc}, "", nil)
-					if flusher != nil {
-						flusher.Flush()
+					if callID != "" {
+						if _, exists := toolCalls[callID]; !exists {
+							toolCallOrder = append(toolCallOrder, callID)
+						}
+						toolCalls[callID] = &toolAcc{name: name}
+					}
 				}
+			}
+
+		case "response.function_call_arguments.delta":
+			// Accumulate arguments for the matching call_id.
+			if callID, ok := evt["call_id"].(string); ok {
+				acc, exists := toolCalls[callID]
+				if !exists {
+					acc = &toolAcc{}
+					toolCalls[callID] = acc
+					toolCallOrder = append(toolCallOrder, callID)
+				}
+				if n, ok := evt["name"].(string); ok && n != "" {
+					acc.name = n
+				}
+				if delta, ok := evt["delta"].(string); ok {
+					acc.args.WriteString(delta)
+				}
+			}
+
+		case "response.output_item.done":
+			// Emit accumulated tool calls when the output item completes.
+			if item, ok := evt["item"].(map[string]any); ok {
+				if t, _ := item["type"].(string); t == "function_call" {
+					emitAccumulatedTools()
 				}
 			}
 
