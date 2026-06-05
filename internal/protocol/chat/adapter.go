@@ -964,7 +964,7 @@ func stripEmptyArgToolCalls(messages []ChatMessage) []ChatMessage {
 	}
 
 	isEmptyArgs := func(raw string) bool {
-		return raw == "{}" || raw == `""` || raw == ""
+		return raw == "\"{}\"" || raw == "{}" || raw == "\"\"" || raw == "" || raw == `""`
 	}
 
 	isToolError := func(msg ChatMessage) bool {
