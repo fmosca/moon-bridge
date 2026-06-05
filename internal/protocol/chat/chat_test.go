@@ -2536,7 +2536,7 @@ func TestNewClient_NormalizesBaseURL(t *testing.T) {
 	}
 }
 
-func TestFromCoreRequest_ToolCallArgumentsAreJSONString(t *testing.T) {
+func TestFromCoreRequest_ToolCallArgumentsAreRawJSON(t *testing.T) {
 	adapter := newTestAdapter()
 
 	req := &format.CoreRequest{
@@ -2583,20 +2583,15 @@ func TestFromCoreRequest_ToolCallArgumentsAreJSONString(t *testing.T) {
 		t.Errorf("ToolCall.Function.Name = %q, want get_weather", tc.Function.Name)
 	}
 
-	// CRITICAL: arguments must be a JSON string (including quotes), not a raw object
+	// Arguments should be the raw JSON object, not double-encoded.
 	argsStr := string(tc.Function.Arguments)
-	if !strings.HasPrefix(argsStr, `"`) {
-		t.Errorf("arguments should start with double-quote character (JSON string encoding), got: %s", argsStr)
+	if argsStr != `{"city":"Paris"}` {
+		t.Errorf("arguments = %q, want JSON object with city=Paris", argsStr)
 	}
-	// Parse as JSON string to get inner JSON object
-	var innerStr string
-	if err := json.Unmarshal(tc.Function.Arguments, &innerStr); err != nil {
-		t.Fatalf("arguments is not a valid JSON string: %v (raw: %s)", err, argsStr)
-	}
-	// Inner string must be valid JSON object
+	// Must be valid JSON object
 	var obj map[string]any
-	if err := json.Unmarshal([]byte(innerStr), &obj); err != nil {
-		t.Fatalf("inner arguments is not valid JSON: %v (inner: %s)", err, innerStr)
+	if err := json.Unmarshal(tc.Function.Arguments, &obj); err != nil {
+		t.Fatalf("arguments is not valid JSON: %v (raw: %s)", err, argsStr)
 	}
 	if obj["city"] != "Paris" {
 		t.Errorf("unexpected city value: %v", obj["city"])

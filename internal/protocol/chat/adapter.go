@@ -593,14 +593,20 @@ func (a *ChatProviderAdapter) toChatMessage(msg format.CoreMessage) ChatMessage 
 	if len(toolUseBlocks) > 0 {
 		chatMsg.ToolCalls = make([]ToolCall, 0, len(toolUseBlocks))
 		for _, b := range toolUseBlocks {
-			argsStr, _ := json.Marshal(string(b.ToolInput))
-			slog.Default().Debug("chat adapter: marshaling tool call args", "tool_name", b.ToolName, "tool_call_id", b.ToolUseID, "tool_input_raw", string(b.ToolInput), "tool_input_len", len(b.ToolInput), "arguments_marshaled", string(argsStr))
+			// Use ToolInput directly as arguments — it's already valid JSON.
+			// json.Marshal(string(...)) would double-encode, e.g.
+			// {"url":"x"} -> "{\"url\":\"x\"}" which breaks providers.
+			argsRaw := b.ToolInput
+			slog.Default().Debug("chat adapter: marshaling tool call args",
+				"tool_name", b.ToolName,
+				"tool_call_id", b.ToolUseID,
+				"arguments_raw", string(argsRaw))
 			chatMsg.ToolCalls = append(chatMsg.ToolCalls, ToolCall{
 				ID:   b.ToolUseID,
 				Type: "function",
 				Function: ToolCallFunc{
 					Name:      b.ToolName,
-					Arguments: json.RawMessage(argsStr),
+					Arguments: argsRaw,
 				},
 			})
 		}
@@ -956,16 +962,37 @@ func collapseToolCallLoops(messages []ChatMessage) []ChatMessage {
 }
 
 // stripEmptyArgToolCalls removes assistant messages containing only empty-arg
-// tool calls (arguments are "{}" or "") that are immediately followed by a
-// tool error result. These cause providers like Ollama/DeepSeek to return 400.
+// tool calls (arguments are "{}" or "" or any double-encoded variant) that are
+// immediately followed by a tool error result. These cause providers like
+// Ollama/DeepSeek to return 400 "invalid tool call arguments".
 func stripEmptyArgToolCalls(messages []ChatMessage) []ChatMessage {
 	if len(messages) < 2 {
 		return messages
 	}
 
+	// isEmptyArgs checks whether tool call arguments are effectively empty,
+	// handling direct forms ({}, "", "{}"), double-JSON-encoded forms
+	// (e.g. "\"\"" from marshaling "" ), and deeper encoding depth.
 	isEmptyArgs := func(raw string) bool {
-		return raw == "\"{}\"" || raw == "{}" || raw == "\"\"" || raw == "" || raw == `""`
+		if raw == `{}` || raw == `"{}"` || raw == `""` || raw == "" {
+			return true
+		}
+		// Recursively unmarshal: peel layers of JSON string encoding.
+		// Stops after 4 layers (guards against infinite loops).
+		decoded := raw
+		for range 4 {
+			var s string
+			if json.Unmarshal([]byte(decoded), &s) != nil {
+				break // not a JSON string
+			}
+			decoded = s
+			if decoded == "" || decoded == `{}` || decoded == `"{}"` || decoded == `""` {
+				return true
+			}
+		}
+		return false
 	}
+
 
 	isToolError := func(msg ChatMessage) bool {
 		if msg.Role != "tool" {
