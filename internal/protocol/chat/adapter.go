@@ -100,6 +100,7 @@ func (a *ChatProviderAdapter) FromCoreRequest(ctx context.Context, req *format.C
 		chatReq.Messages = append(chatReq.Messages, chatMsg)
 	}
 	chatReq.Messages = collapseToolCallLoops(chatReq.Messages)
+	chatReq.Messages = stripEmptyArgToolCalls(chatReq.Messages)
 
 	// Sampling parameters.
 	if req.Temperature != nil {
@@ -949,5 +950,62 @@ func collapseToolCallLoops(messages []ChatMessage) []ChatMessage {
 		}
 	}
 
+	return result
+}
+
+// stripEmptyArgToolCalls removes assistant messages containing only empty-arg
+// tool calls (arguments are "{}" or "") that are immediately followed by a
+// tool error result. These cause providers like Ollama/DeepSeek to return 400.
+func stripEmptyArgToolCalls(messages []ChatMessage) []ChatMessage {
+	if len(messages) < 2 {
+		return messages
+	}
+
+	isEmptyArgs := func(raw string) bool {
+		return raw == "{}" || raw == `""` || raw == ""
+	}
+
+	isToolError := func(msg ChatMessage) bool {
+		if msg.Role != "tool" {
+			return false
+		}
+		if s, ok := msg.Content.(string); ok {
+			return strings.Contains(s, "error") || strings.Contains(s, "MCP error") || strings.Contains(s, "Invalid input")
+		}
+		return false
+	}
+
+	var result []ChatMessage
+	i := 0
+	for i < len(messages) {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			result = append(result, msg)
+			i++
+			continue
+		}
+
+		// Check if ALL tool calls in this message have empty args.
+		allEmpty := true
+		for _, tc := range msg.ToolCalls {
+			if !isEmptyArgs(string(tc.Function.Arguments)) {
+				allEmpty = false
+				break
+			}
+		}
+
+		// If all empty and followed by a tool error, skip this assistant+tool pair.
+		if allEmpty && i+1 < len(messages) && isToolError(messages[i+1]) {
+			slog.Default().Debug("chat adapter: stripping empty-arg tool call",
+				"msg_idx", i,
+				"tool_name", msg.ToolCalls[0].Function.Name,
+			)
+			i += 2 // skip assistant + tool error
+			continue
+		}
+
+		result = append(result, msg)
+		i++
+	}
 	return result
 }
