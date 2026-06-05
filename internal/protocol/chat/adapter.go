@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"log/slog"
+
 	"moonbridge/internal/format"
 )
 
@@ -588,6 +590,7 @@ func (a *ChatProviderAdapter) toChatMessage(msg format.CoreMessage) ChatMessage 
 		chatMsg.ToolCalls = make([]ToolCall, 0, len(toolUseBlocks))
 		for _, b := range toolUseBlocks {
 			argsStr, _ := json.Marshal(string(b.ToolInput))
+			slog.Default().Debug("chat adapter: marshaling tool call args", "tool_name", b.ToolName, "tool_call_id", b.ToolUseID, "tool_input_raw", string(b.ToolInput), "tool_input_len", len(b.ToolInput), "arguments_marshaled", string(argsStr))
 			chatMsg.ToolCalls = append(chatMsg.ToolCalls, ToolCall{
 				ID:   b.ToolUseID,
 				Type: "function",

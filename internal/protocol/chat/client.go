@@ -157,6 +157,7 @@ func (c *Client) newRequest(ctx context.Context, req *ChatRequest) (*http.Reques
 	}
 
 	url := c.baseURL + "/v1/chat/completions"
+	slog.Default().Debug("chat client: sending request", "url", url, "body_preview", string(data)[:min(len(data), 500)])
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("chat API request build: %w", err)
