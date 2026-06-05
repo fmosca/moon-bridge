@@ -159,7 +159,14 @@ func (c *Client) newRequest(ctx context.Context, req *ChatRequest) (*http.Reques
 
 	url := c.baseURL + "/v1/chat/completions"
 	slog.Default().Debug("chat client: sending request", "url", url, "body_len", len(data))
+		// Apply loop guards before sending.
+		req.Messages = collapseToolCallLoops(req.Messages)
+		req.Messages = stripEmptyArgToolCalls(req.Messages)
+		data, _ = json.Marshal(req)
+		slog.Default().Debug("chat client: after guards", "msg_count", len(req.Messages))
 	os.WriteFile("/app/logs/chat-request.json", data, 0644)
+	os.WriteFile("/app/logs/chat-request-raw.json", data, 0644)
+
 		for i, msg := range req.Messages {
 			if len(msg.ToolCalls) > 0 {
 				slog.Default().Debug("chat client: message with tool calls", "msg_idx", i, "role", msg.Role, "tool_count", len(msg.ToolCalls))
