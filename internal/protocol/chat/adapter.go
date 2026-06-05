@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
+	"log/slog"
 	"moonbridge/internal/format"
 )
 
@@ -587,13 +587,20 @@ func (a *ChatProviderAdapter) toChatMessage(msg format.CoreMessage) ChatMessage 
 	if len(toolUseBlocks) > 0 {
 		chatMsg.ToolCalls = make([]ToolCall, 0, len(toolUseBlocks))
 		for _, b := range toolUseBlocks {
-			argsStr, _ := json.Marshal(string(b.ToolInput))
+			// Use ToolInput directly as arguments — it's already valid JSON.
+			// json.Marshal(string(...)) would double-encode, e.g.
+			// {"url":"x"} -> "{\\"url\\":\\"x\\"}" which breaks providers.
+			argsRaw := b.ToolInput
+			slog.Default().Debug("chat adapter: marshaling tool call args",
+				"tool_name", b.ToolName,
+				"tool_call_id", b.ToolUseID,
+				"arguments_raw", string(argsRaw))
 			chatMsg.ToolCalls = append(chatMsg.ToolCalls, ToolCall{
 				ID:   b.ToolUseID,
 				Type: "function",
 				Function: ToolCallFunc{
 					Name:      b.ToolName,
-					Arguments: json.RawMessage(argsStr),
+					Arguments: argsRaw,
 				},
 			})
 		}
@@ -877,4 +884,152 @@ func unquoteArguments(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	return json.RawMessage(s)
+}
+
+// collapseToolCallLoops detects consecutive identical failed tool calls and
+// collapses them to prevent rejection from providers (e.g., Ollama DeepSeek
+// returns 400 when assistant messages contain tool_calls with empty arguments).
+func collapseToolCallLoops(messages []ChatMessage) []ChatMessage {
+	if len(messages) < 4 {
+		return messages
+	}
+
+	var result []ChatMessage
+	i := 0
+	for i < len(messages) {
+		// Look for assistant(tool) -> tool(error) pairs repeated with same tool+args.
+		if i+1 >= len(messages) || messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+			result = append(result, messages[i])
+			i++
+			continue
+		}
+
+		// For each tool call in this assistant message, check if it's part of a repeating error loop.
+		collapsed := false
+		for tcIdx := range messages[i].ToolCalls {
+			j := i
+			firstArgs := string(messages[j].ToolCalls[tcIdx].Function.Arguments)
+			firstName := messages[j].ToolCalls[tcIdx].Function.Name
+			runLen := 0
+
+			for j+1 < len(messages) && messages[j+1].Role == "tool" {
+				resultContent := ""
+				if s, ok := messages[j+1].Content.(string); ok {
+					resultContent = s
+				}
+				isError := strings.Contains(resultContent, "error") || strings.Contains(resultContent, "MCP error")
+				if !isError {
+					break
+				}
+				if j+2 >= len(messages) || messages[j+2].Role != "assistant" || len(messages[j+2].ToolCalls) <= tcIdx {
+					break
+				}
+				nextTool := messages[j+2].ToolCalls[tcIdx]
+				if nextTool.Function.Name != firstName || string(nextTool.Function.Arguments) != firstArgs {
+					break
+				}
+				runLen++
+				j += 2
+			}
+
+			if runLen >= 2 {
+				// Keep first pair, replace rest with summary.
+				result = append(result, messages[i])     // assistant with original tool call
+				result = append(result, messages[i+1])   // tool error result
+				result = append(result, ChatMessage{
+					Role: "assistant",
+					Content: fmt.Sprintf("Called %s %d more times with the same arguments but it kept failing.", firstName, runLen),
+				})
+				i = j // advance past collapsed run
+				collapsed = true
+				break
+			}
+		}
+
+		if !collapsed {
+			result = append(result, messages[i])
+			i++
+		}
+	}
+
+	return result
+}
+
+// stripEmptyArgToolCalls removes assistant messages containing only empty-arg
+// tool calls (arguments are "{}" or "" or any double-encoded variant) that are
+// immediately followed by a tool error result. These cause providers like
+// Ollama/DeepSeek to return 400 "invalid tool call arguments".
+func stripEmptyArgToolCalls(messages []ChatMessage) []ChatMessage {
+	if len(messages) < 2 {
+		return messages
+	}
+
+	// isEmptyArgs checks whether tool call arguments are effectively empty,
+	// handling direct forms ({}, "", "{}"), double-JSON-encoded forms
+	// (e.g. "\"\"" from marshaling "" ), and deeper encoding depth.
+	isEmptyArgs := func(raw string) bool {
+		if raw == `{}` || raw == `"{}"` || raw == `""` || raw == "" {
+			return true
+		}
+		// Recursively unmarshal: peel layers of JSON string encoding.
+		// Stops after 4 layers (guards against infinite loops).
+		decoded := raw
+		for range 4 {
+			var s string
+			if json.Unmarshal([]byte(decoded), &s) != nil {
+				break // not a JSON string
+			}
+			decoded = s
+			if decoded == "" || decoded == `{}` || decoded == `"{}"` || decoded == `""` {
+				return true
+			}
+		}
+		return false
+	}
+
+
+	isToolError := func(msg ChatMessage) bool {
+		if msg.Role != "tool" {
+			return false
+		}
+		if s, ok := msg.Content.(string); ok {
+			return strings.Contains(s, "error") || strings.Contains(s, "MCP error") || strings.Contains(s, "Invalid input")
+		}
+		return false
+	}
+
+	var result []ChatMessage
+	i := 0
+	for i < len(messages) {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			result = append(result, msg)
+			i++
+			continue
+		}
+
+		// Check if ALL tool calls in this message have empty args.
+		allEmpty := true
+		for _, tc := range msg.ToolCalls {
+			if !isEmptyArgs(string(tc.Function.Arguments)) {
+				allEmpty = false
+				break
+			}
+		}
+
+		// If all empty and followed by a tool error, skip this assistant+tool pair.
+slog.Default().Debug("chat adapter: strip check", "msg_idx", i, "role", msg.Role, "toolcalls", len(msg.ToolCalls), "allEmpty", allEmpty, "nextRole", messages[i+1].Role, "nextIsToolError", isToolError(messages[i+1]))
+		if allEmpty && i+1 < len(messages) && isToolError(messages[i+1]) {
+			slog.Default().Debug("chat adapter: stripping empty-arg tool call",
+				"msg_idx", i,
+				"tool_name", msg.ToolCalls[0].Function.Name,
+			)
+			i += 2 // skip assistant + tool error
+			continue
+		}
+
+		result = append(result, msg)
+		i++
+	}
+	return result
 }
