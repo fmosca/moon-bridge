@@ -99,6 +99,7 @@ func (a *ChatProviderAdapter) FromCoreRequest(ctx context.Context, req *format.C
 		chatMsg := a.toChatMessage(msg)
 		chatReq.Messages = append(chatReq.Messages, chatMsg)
 	}
+	chatReq.Messages = collapseToolCallLoops(chatReq.Messages)
 
 	// Sampling parameters.
 	if req.Temperature != nil {
@@ -880,4 +881,73 @@ func unquoteArguments(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	return json.RawMessage(s)
+}
+
+// collapseToolCallLoops detects consecutive identical failed tool calls and
+// collapses them to prevent rejection from providers (e.g., Ollama DeepSeek
+// returns 400 when assistant messages contain tool_calls with empty arguments).
+func collapseToolCallLoops(messages []ChatMessage) []ChatMessage {
+	if len(messages) < 4 {
+		return messages
+	}
+
+	var result []ChatMessage
+	i := 0
+	for i < len(messages) {
+		// Look for assistant(tool) -> tool(error) pairs repeated with same tool+args.
+		if i+1 >= len(messages) || messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+			result = append(result, messages[i])
+			i++
+			continue
+		}
+
+		// For each tool call in this assistant message, check if it's part of a repeating error loop.
+		collapsed := false
+		for tcIdx := range messages[i].ToolCalls {
+			j := i
+			firstArgs := string(messages[j].ToolCalls[tcIdx].Function.Arguments)
+			firstName := messages[j].ToolCalls[tcIdx].Function.Name
+			runLen := 0
+
+			for j+1 < len(messages) && messages[j+1].Role == "tool" {
+				resultContent := ""
+				if s, ok := messages[j+1].Content.(string); ok {
+					resultContent = s
+				}
+				isError := strings.Contains(resultContent, "error") || strings.Contains(resultContent, "MCP error")
+				if !isError {
+					break
+				}
+				if j+2 >= len(messages) || messages[j+2].Role != "assistant" || len(messages[j+2].ToolCalls) <= tcIdx {
+					break
+				}
+				nextTool := messages[j+2].ToolCalls[tcIdx]
+				if nextTool.Function.Name != firstName || string(nextTool.Function.Arguments) != firstArgs {
+					break
+				}
+				runLen++
+				j += 2
+			}
+
+			if runLen >= 2 {
+				// Keep first pair, replace rest with summary.
+				result = append(result, messages[i])     // assistant with original tool call
+				result = append(result, messages[i+1])   // tool error result
+				result = append(result, ChatMessage{
+					Role: "assistant",
+					Content: fmt.Sprintf("Called %s %d more times with the same arguments but it kept failing.", firstName, runLen),
+				})
+				i = j // advance past collapsed run
+				collapsed = true
+				break
+			}
+		}
+
+		if !collapsed {
+			result = append(result, messages[i])
+			i++
+		}
+	}
+
+	return result
 }
