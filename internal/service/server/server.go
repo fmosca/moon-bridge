@@ -216,9 +216,6 @@ type modelEntry struct {
 	ContextWindow  *int64 `json:"context_window,omitempty"`
 	MaxOutputTokens *int64 `json:"max_output_tokens,omitempty"`
 }
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
-}
 
 type modelsResponse struct {
 	Object string       `json:"object"`
