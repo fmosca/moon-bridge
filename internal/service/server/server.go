@@ -209,8 +209,13 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 // modelEntry is returned by the /v1/models endpoint in OpenAI-compatible format.
 type modelEntry struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
+	ID             string `json:"id"`
+	Object         string `json:"object"`
+	Created        int64  `json:"created"`
+	OwnedBy        string `json:"owned_by"`
+	ContextWindow  *int64 `json:"context_window,omitempty"`
+	MaxOutputTokens *int64 `json:"max_output_tokens,omitempty"`
+}
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
 }
@@ -249,23 +254,35 @@ func (s *Server) listModels() []modelEntry {
 		routes = fullCfg.Routes
 	}
 
+	intPtr := func(v int) *int64 {
+		if v <= 0 {
+			return nil
+		}
+		n := int64(v)
+		return &n
+	}
+
 	for key, def := range providerDefs {
-		for modelName := range def.Models {
+		for modelName, meta := range def.Models {
 			models = append(models, modelEntry{
-				ID:      key + "/" + modelName,
-				Object:  "model",
-				Created: 1700000000,
-				OwnedBy: key,
+				ID:             key + "/" + modelName,
+				Object:         "model",
+				Created:        1700000000,
+				OwnedBy:        key,
+				ContextWindow:  intPtr(meta.ContextWindow),
+				MaxOutputTokens: intPtr(meta.MaxOutputTokens),
 			})
 		}
 	}
 
 	for alias, route := range routes {
 		models = append(models, modelEntry{
-			ID:      alias,
-			Object:  "model",
-			Created: 1700000000,
-			OwnedBy: route.Provider,
+			ID:             alias,
+			Object:         "model",
+			Created:        1700000000,
+			OwnedBy:        route.Provider,
+			ContextWindow:  intPtr(route.ContextWindow),
+			MaxOutputTokens: intPtr(route.MaxOutputTokens),
 		})
 	}
 	return models
