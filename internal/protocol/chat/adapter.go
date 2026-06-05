@@ -997,6 +997,7 @@ func stripEmptyArgToolCalls(messages []ChatMessage) []ChatMessage {
 		}
 
 		// If all empty and followed by a tool error, skip this assistant+tool pair.
+slog.Default().Debug("chat adapter: strip check", "msg_idx", i, "role", msg.Role, "toolcalls", len(msg.ToolCalls), "allEmpty", allEmpty, "nextRole", messages[i+1].Role, "nextIsToolError", isToolError(messages[i+1]))
 		if allEmpty && i+1 < len(messages) && isToolError(messages[i+1]) {
 			slog.Default().Debug("chat adapter: stripping empty-arg tool call",
 				"msg_idx", i,
