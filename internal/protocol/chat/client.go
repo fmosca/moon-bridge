@@ -160,6 +160,12 @@ func (c *Client) newRequest(ctx context.Context, req *ChatRequest) (*http.Reques
 	slog.Default().Debug("chat client: sending request", "url", url, "body_preview", string(data)[:min(len(data), 4000)])
 		for i, msg := range req.Messages {
 			if len(msg.ToolCalls) > 0 {
+				slog.Default().Debug("chat client: message with tool calls", "msg_idx", i, "role", msg.Role, "tool_count", len(msg.ToolCalls))
+				for j, tc := range msg.ToolCalls {
+					slog.Default().Debug("chat client: tool call detail", "msg_idx", i, "tool_idx", j, "name", tc.Function.Name, "args", string(tc.Function.Arguments), "args_len", len(tc.Function.Arguments))
+				}
+			}
+			if len(msg.ToolCalls) > 0 {
 				slog.Default().Debug("chat client: message with tool calls", "msg_idx", i, "role", msg.Role, "tool_count", len(msg.ToolCalls), "first_tool", msg.ToolCalls[0].Function.Name, "first_args", string(msg.ToolCalls[0].Function.Arguments))
 			}
 		}
