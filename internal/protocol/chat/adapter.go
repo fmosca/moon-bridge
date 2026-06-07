@@ -97,6 +97,10 @@ func (a *ChatProviderAdapter) FromCoreRequest(ctx context.Context, req *format.C
 		chatMsg := a.toChatMessage(msg)
 		chatReq.Messages = append(chatReq.Messages, chatMsg)
 	}
+	originalLen := len(chatReq.Messages)
+	chatReq.Messages = collapseToolCallLoops(chatReq.Messages)
+	slog.Default().Debug("chat adapter: guards applied", "before", originalLen, "after", len(chatReq.Messages))
+
 
 	// Sampling parameters.
 	if req.Temperature != nil {
@@ -606,21 +610,26 @@ func (a *ChatProviderAdapter) toChatMessage(msg format.CoreMessage) ChatMessage 
 		}
 	}
 
-	// Set tool_call_id for tool result messages.
-	if msg.Role == "tool" && len(toolUseBlocks) == 0 {
-		// Look for tool_call_id in the content blocks.
-		for _, b := range msg.Content {
-			if b.Type == "tool_result" {
-				chatMsg.ToolCallID = b.ToolUseID
-				// Convert tool_result content to string.
-				var toolResultText string
-				for _, tc := range b.ToolResultContent {
-					toolResultText += tc.Text
-				}
-				chatMsg.Content = toolResultText
-				break
-			}
+	// Detect tool_result blocks — they should produce role=tool messages
+	// in Chat Completions format, even if Core format uses role=user.
+	// Only applies when the message is purely a tool result (no images or other content).
+	var toolResultBlock *format.CoreContentBlock
+	hasOtherContent := false
+	for i := range msg.Content {
+		if msg.Content[i].Type == "tool_result" {
+			toolResultBlock = &msg.Content[i]
+		} else if msg.Content[i].Type == "image" {
+			hasOtherContent = true
 		}
+	}
+	if toolResultBlock != nil && len(toolUseBlocks) == 0 && !hasOtherContent {
+		chatMsg.Role = "tool"
+		chatMsg.ToolCallID = toolResultBlock.ToolUseID
+		var toolResultText string
+		for _, tc := range toolResultBlock.ToolResultContent {
+			toolResultText += tc.Text
+		}
+		chatMsg.Content = toolResultText
 	}
 
 	return chatMsg
@@ -957,6 +966,36 @@ func collapseToolCallLoops(messages []ChatMessage) []ChatMessage {
 
 // stripEmptyArgToolCalls removes assistant messages containing only empty-arg
 // tool calls (arguments are "{}" or "" or any double-encoded variant) that are
+// normalizeToolCallArguments ensures every tool call arguments field is a valid
+// JSON string (not a raw JSON object). The OpenAI Chat Completions API requires
+// arguments to be a string containing JSON, not an inline JSON object.
+// Some clients send {"arguments": {"key": "val"}} instead of
+// {"arguments": "{\"key\": \"val\"}"}, causing DeepSeek to return 400.
+func normalizeToolCallArguments(messages []ChatMessage) []ChatMessage {
+	for i := range messages {
+		if messages[i].Role != "assistant" || len(messages[i].ToolCalls) == 0 {
+			continue
+		}
+		for j := range messages[i].ToolCalls {
+			args := messages[i].ToolCalls[j].Function.Arguments
+			if len(args) == 0 {
+				continue
+			}
+			// If arguments starts with '{' or '[', it's a raw JSON object/array,
+			// not a JSON string. Wrap it in quotes to make it a valid string.
+			if args[0] == '{' || args[0] == '[' {
+				encoded, err := json.Marshal(string(args))
+				if err != nil {
+					slog.Default().Warn("chat adapter: failed to encode tool call arguments", "error", err)
+					continue
+				}
+				messages[i].ToolCalls[j].Function.Arguments = json.RawMessage(encoded)
+			}
+		}
+	}
+	return messages
+}
+
 // immediately followed by a tool error result. These cause providers like
 // Ollama/DeepSeek to return 400 "invalid tool call arguments".
 func stripEmptyArgToolCalls(messages []ChatMessage) []ChatMessage {
