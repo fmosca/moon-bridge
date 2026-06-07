@@ -105,9 +105,15 @@ func (server *Server) handleChatCompletions(writer http.ResponseWriter, request 
 	responsesReq := coreRequestToResponsesRequest(coreReq)
 
 	// Dispatch: non-streaming uses the response-recorder approach,
-	// streaming uses a pipe to translate SSE formats.
+	// Streaming: use direct path for openai-chat, translation path otherwise.
 	if chatReq.Stream {
-		server.dispatchChatStream(writer, request, chatReq, responsesReq, resolvedRoute, chatClient)
+		preferred, ok := resolvedRoute.Preferred()
+		if ok && preferred.Protocol == config.ProtocolOpenAIChat {
+			streamStart := time.Now()
+			server.dispatchChatStreamDirect(writer, request, chatReq, resolvedRoute, preferred, request.Context(), streamStart)
+		} else {
+			server.dispatchChatStream(writer, request, chatReq, responsesReq, resolvedRoute, chatClient)
+		}
 	} else {
 		server.dispatchChatNonStream(writer, request, chatReq, responsesReq, resolvedRoute, chatClient)
 	}
@@ -290,6 +296,116 @@ func (server *Server) dispatchChatNonStreamDirect(
 	}
 
 	log.Info("chat completions completed (direct)", "model", chatReq.Model, "provider", preferred.ProviderKey)
+}
+
+// dispatchChatStreamDirect streams a Chat Completions request directly
+// through the Chat protocol adapter chain, preserving reasoning_content and
+// tool calls. Used when the upstream speaks openai-chat.
+func (server *Server) dispatchChatStreamDirect(
+	w http.ResponseWriter,
+	r *http.Request,
+	chatReq chat.ChatRequest,
+	route *provider.ResolvedRoute,
+	preferred provider.ProviderCandidate,
+	ctx context.Context,
+	requestStart time.Time,
+) {
+	log := slog.Default().With("model", chatReq.Model, "path", "chat-stream-direct")
+
+	// 1-2. Same conversion as non-streaming direct path.
+	chatClientAdapter, ok := server.adapterRegistry.GetClient(config.ProtocolOpenAIChat)
+	if !ok {
+		writeChatError(w, http.StatusInternalServerError, "no chat client adapter", "server_error", "adapter_fallback")
+		return
+	}
+	coreReq, err := chatClientAdapter.ToCoreRequest(ctx, &chatReq)
+	if err != nil {
+		log.Error("ToCoreRequest failed", "error", err)
+		writeChatError(w, http.StatusInternalServerError, "request conversion failed", "server_error", "conversion_error")
+		return
+	}
+	coreReq.Model = preferred.UpstreamModel
+
+	chatProviderAdapter, ok := server.adapterRegistry.GetProvider(config.ProtocolOpenAIChat)
+	if !ok {
+		writeChatError(w, http.StatusInternalServerError, "no chat provider adapter", "server_error", "adapter_fallback")
+		return
+	}
+	upstreamAny, err := chatProviderAdapter.FromCoreRequest(ctx, coreReq)
+	if err != nil {
+		log.Error("FromCoreRequest failed", "error", err)
+		writeChatError(w, http.StatusInternalServerError, "upstream conversion failed", "server_error", "conversion_error")
+		return
+	}
+	upstreamReq := upstreamAny.(*chat.ChatRequest)
+
+	// 3. Call upstream streaming Chat Completions API.
+	chatClientRaw := server.activeChatClient(preferred.ProviderKey)
+	if chatClientRaw == nil {
+		log.Error("no chat client for provider", "provider", preferred.ProviderKey)
+		writeChatError(w, http.StatusBadGateway, "no chat client for provider", "server_error", "provider_error")
+		return
+	}
+	chatUpstreamClient, ok := chatClientRaw.(*chat.Client)
+	if !ok {
+		log.Error("invalid chat client type", "provider", preferred.ProviderKey)
+		writeChatError(w, http.StatusInternalServerError, "invalid chat client", "server_error", "internal_error")
+		return
+	}
+
+	// Prepend cached reasoning for DeepSeek thinking chain replay.
+	if server.pluginRegistry != nil {
+		sess := server.sessionForRequest(r)
+		if sess != nil {
+			prependCachedReasoningForChat(upstreamReq, sess)
+		}
+	}
+
+	// Start the stream.
+	ch, err := chatUpstreamClient.StreamChat(ctx, upstreamReq)
+	if err != nil {
+		log.Error("StreamChat failed", "error", err)
+		writeChatError(w, http.StatusBadGateway, fmt.Sprintf("upstream stream error: %v", err), "server_error", "provider_error")
+		return
+	}
+
+	// Write SSE headers.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if ok {
+		flusher.Flush()
+	}
+
+	// Proxy SSE chunks from upstream to client.
+	for chunk := range ch {
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			log.Error("failed to marshal stream chunk", "error", err)
+			continue
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
+	// Send [DONE] sentinel.
+	io.WriteString(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+
+	// Usage tracking.
+	if server.pluginRegistry != nil {
+		usage := zeroUsage(config.ProtocolOpenAIChat, "none")
+		server.onRequestCompleted(chatReq.Model, preferred.UpstreamModel, preferred.ProviderKey, requestStart, usage, 0, "success", "")
+	}
+
+	log.Info("chat stream completed (direct)", "model", chatReq.Model, "provider", preferred.ProviderKey)
 }
 
 // dispatchChatStream handles streaming Chat Completions by translating
