@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"net/http"
 	"strings"
 )
@@ -165,8 +164,6 @@ func (c *Client) newRequest(ctx context.Context, req *ChatRequest) (*http.Reques
 		req.Messages = normalizeToolCallArguments(req.Messages)
 		data, _ = json.Marshal(req)
 		slog.Default().Debug("chat client: after guards", "msg_count", len(req.Messages))
-	os.WriteFile("/app/logs/chat-request.json", data, 0644)
-	os.WriteFile("/app/logs/chat-request-raw.json", data, 0644)
 
 		for i, msg := range req.Messages {
 			if len(msg.ToolCalls) > 0 {
