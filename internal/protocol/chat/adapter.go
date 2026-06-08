@@ -101,6 +101,8 @@ func (a *ChatProviderAdapter) FromCoreRequest(ctx context.Context, req *format.C
 	}
 	originalLen := len(chatReq.Messages)
 	chatReq.Messages = collapseToolCallLoops(chatReq.Messages)
+	chatReq.Messages = stripEmptyArgToolCalls(chatReq.Messages)
+	chatReq.Messages = normalizeToolCallArguments(chatReq.Messages)
 	slog.Default().Debug("chat adapter: guards applied", "before", originalLen, "after", len(chatReq.Messages))
 
 

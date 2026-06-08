@@ -158,25 +158,9 @@ func (c *Client) newRequest(ctx context.Context, req *ChatRequest) (*http.Reques
 
 	url := c.baseURL + "/v1/chat/completions"
 	slog.Default().Debug("chat client: sending request", "url", url, "body_len", len(data))
-		// Apply loop guards and normalize before sending.
-		req.Messages = collapseToolCallLoops(req.Messages)
-		req.Messages = stripEmptyArgToolCalls(req.Messages)
-		req.Messages = normalizeToolCallArguments(req.Messages)
-		data, _ = json.Marshal(req)
-		slog.Default().Debug("chat client: after guards", "msg_count", len(req.Messages))
 
-		for i, msg := range req.Messages {
-			if len(msg.ToolCalls) > 0 {
-				slog.Default().Debug("chat client: message with tool calls", "msg_idx", i, "role", msg.Role, "tool_count", len(msg.ToolCalls))
-				for j, tc := range msg.ToolCalls {
-					slog.Default().Debug("chat client: tool call detail", "msg_idx", i, "tool_idx", j, "name", tc.Function.Name, "args", string(tc.Function.Arguments), "args_len", len(tc.Function.Arguments))
-				}
-			}
-			if len(msg.ToolCalls) > 0 {
-				slog.Default().Debug("chat client: message with tool calls", "msg_idx", i, "role", msg.Role, "tool_count", len(msg.ToolCalls), "first_tool", msg.ToolCalls[0].Function.Name, "first_args", string(msg.ToolCalls[0].Function.Arguments))
-			}
-		}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+
 	if err != nil {
 		return nil, fmt.Errorf("chat API request build: %w", err)
 	}

@@ -2583,15 +2583,19 @@ func TestFromCoreRequest_ToolCallArgumentsAreRawJSON(t *testing.T) {
 		t.Errorf("ToolCall.Function.Name = %q, want get_weather", tc.Function.Name)
 	}
 
-	// Arguments should be the raw JSON object, not double-encoded.
+	// Arguments must be a JSON string per Chat Completions API spec.
 	argsStr := string(tc.Function.Arguments)
-	if argsStr != `{"city":"Paris"}` {
-		t.Errorf("arguments = %q, want JSON object with city=Paris", argsStr)
+	if argsStr != `"{\"city\":\"Paris\"}"` {
+		t.Errorf("arguments = %q, want JSON-encoded string of {\"city\":\"Paris\"}", argsStr)
 	}
-	// Must be valid JSON object
+	// Unwrap the JSON string to verify the inner object.
+	var inner string
+	if err := json.Unmarshal(tc.Function.Arguments, &inner); err != nil {
+		t.Fatalf("arguments is not a valid JSON string: %v (raw: %s)", err, argsStr)
+	}
 	var obj map[string]any
-	if err := json.Unmarshal(tc.Function.Arguments, &obj); err != nil {
-		t.Fatalf("arguments is not valid JSON: %v (raw: %s)", err, argsStr)
+	if err := json.Unmarshal([]byte(inner), &obj); err != nil {
+		t.Fatalf("inner arguments is not valid JSON: %v (raw: %s)", err, inner)
 	}
 	if obj["city"] != "Paris" {
 		t.Errorf("unexpected city value: %v", obj["city"])
